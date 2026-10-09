@@ -8,8 +8,10 @@
  * @module
  */
 
+import type * as http from "../http.js";
 import type * as jobs from "../jobs.js";
 import type * as profile from "../profile.js";
+import type * as whatsapp from "../whatsapp.js";
 
 import type {
   ApiFromModules,
@@ -18,8 +20,10 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  http: typeof http;
   jobs: typeof jobs;
   profile: typeof profile;
+  whatsapp: typeof whatsapp;
 }>;
 
 /**

@@ -6,12 +6,13 @@ Business logic: Once you have the users resume, we would tell me their current i
 Database: User preferences needs to saved at a user level additionally basis on the conversation and response received from the user on various offerings the system should then smartly recommend similar kind of reference in the future. What do i mean by user preference and user level data. Users resume ,contact details , linkedin url , industry preference , location preference , the look back period on job search, the job portal recommendation they have if incase of. Anything explicitly theuser mentioned to be taken care of should be maintained at a user specific level. The history of the job recommendation and their corresponding outcomes , caveats and response should be saved separately.  The system have capture the logic it used to deliver a job opportunity and also for the once that it didnt because if the user shares a sample job opportunity which the system didnt give then the system should be able to use the same rationale and explain the user in the message and basis on the conversation outcome improve the logic for that user if required. 
 One additional thing that needs to be saved at the user is the resume that the user gives. Now this resume can be in either of  these forms it can be .pdf, .docx,.doc, a google drive link , or a plain text file with .txt extension a link to their website too.also it can be a photograph of their resume which they have it handy on their phone  Do not accept if the data is in coming in excel or ppt or anything which acts as security risk to the platform or anything where the user can pass in carrots <>. If they do so please ask them to share the data in the required format or structure. If the content is in a unrecongised text or format politely disregard the msg and ask them to share in correct format stucture
 Third party: Claude in our case . its saved on Convex , Whatsapp as thats what we are using for communication
-Not in v1: web scrapping for opportunities, scrapping people linkedin post , recommendation on changes on the tweak on the resume if required. Auto apply, message draft for linkedin connections and cold email draft
+In v1: web scrapping for opportunities (LinkedIn's public job pages, no login).
+Not in v1: scrapping people linkedin post , recommendation on changes on the tweak on the resume if required. Auto apply, message draft for linkedin connections and cold email draft
 
 When I report a bug, I'll name the part. Look there first, and tell me if you think I named the wrong one.
 
 ## 2. How we work
-- Read IDEA_SCOPE.md, PRODUCT.md, PLAN.md and PROGRESS.md before anything else, and DESIGN.md before any screen work.
+- Read PRODUCT.md, PLAN.md and PROGRESS.md before anything else.
 - Before writing code, tell me in two or three sentences what you think I'm after, then your plan. Wait for my yes. Don't guess.
 - One milestone at a time: the next one in PLAN.md, working end to end. Nothing outside it.
 - If I ask for something new mid-milestone, add it to the parked list in PLAN.md and carry on.
@@ -38,7 +39,7 @@ Model: [Claude Opus 5.5], thinking moderate because that what i use for building
 What goes in, and its limit: hese forms it can be .pdf, .docx,.doc, a google drive link , or a plain text file with .txt extension a link to their website too.also it can be a photograph of their resume which they have it handy on their phone  Do not accept if the data is in coming in excel or ppt or anything which acts as security risk to the platform or anything where the user can pass in carrots <>. The size of this incoming attachment can not be greater than 1 MB
 Where it runs: a Convex action. Never in the interface.
 Key: ANTHROPIC_API_KEY in Convex environment variables, dev and prod.
-Reply cap: max_output_tokens [500]
+Reply cap: max_output_tokens [4000]
 Calls cap: at most [100] AI calls an hour across the app, checked in the kitchen (Convex rate limiter)
 Provider limit: a hard monthly limit of [$ 5], set by me
 When a cap is hit or the call fails: show "[Busy right now. Try again in a few minutes.]"

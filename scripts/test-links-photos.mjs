@@ -10,7 +10,7 @@ const pdfLink = run("profile:fileUrl", { fileId: await upload(f("priya.pdf"), "a
 
 await runCases([
   { name: "photo of a resume is saved", send: (p) => sendFile(p, f("priya.png"), "priya.png", "image/png"), saved: true, file: true, reply: SAVED },
-  { name: "tiny unreadable photo asks for a clearer one", send: (p) => sendFile(p, f("priya-tiny.png"), "priya-tiny.png", "image/png"), saved: false, reply: /couldn't read that photo|doesn't look like a resume/ },
+  { name: "tiny unreadable photo asks for a clearer one", send: (p) => sendFile(p, f("priya-tiny.png"), "priya-tiny.png", "image/png"), saved: false, reply: /couldn't read that photo clearly/ },
   { name: "link to a resume web page is saved", send: (p) => sendText(p, `My CV: ${htmlLink}`), saved: true, reply: SAVED },
   { name: "link to a resume PDF is saved", send: (p) => sendText(p, pdfLink), saved: true, file: true, reply: SAVED },
   { name: "LinkedIn link explains Save to PDF", send: (p) => sendText(p, "https://www.linkedin.com/in/priya-nair-example"), saved: false, reply: /Save to PDF/ },

@@ -6,5 +6,6 @@
 5. A WhatsApp link I can share with others; clicking it starts a chat with the app
 6. WhatsApp  (9 Oct: receiving + replying built early, tested with made-up messages, while Meta says my Facebook account is too new to create a business)
 Last: the data survives closing and reopening.
+To test on a real phone once Meta works: steps 2 and 3 (WhatsApp file and photo downloads, a working Google Drive link).
 Parked (not now):
 - scrapping people linkedin post , recommendation on changes on the tweak on the resume if required. Auto apply, message draft for linkedin connections and cold email draft. Search for global recommendation if required. Search on VC forums. Connecting with users gmail and scrapping emails and draft email

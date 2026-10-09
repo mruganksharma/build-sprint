@@ -69,6 +69,7 @@ const REPLY = {
 };
 
 const ResumeCheck = z.object({
+  tooBlurry: z.boolean(),
   isResume: z.boolean(),
   summary: z.string().nullable(),
   resumeText: z.string().nullable(),
@@ -76,6 +77,7 @@ const ResumeCheck = z.object({
 
 const SYSTEM_PROMPT = `You read a document a job seeker sent to a job-finding app.
 
+tooBlurry: true if it is a photo or PDF where you can't make out most of the words (blurry, tiny, dark, cut off), so you can't tell what it is. Otherwise false.
 isResume: true only if it is a resume or CV of a person.
 summary: if it is a resume, one factual line under 15 words: current role, years of experience, industry. Example: "Senior Product Manager, 11 years, B2B SaaS". No opinions or compliments about the person. Otherwise null.
 resumeText: if the document is a PDF or a photo and it is a resume, the full resume as plain text, keeping all content and dropping layout. If it is a resume but you can't read most of the text (blurry, cut off, too small), null. For anything else, null.`;
@@ -226,6 +228,10 @@ async function readAndSave(ctx: ActionCtx, phone: string, input: { text: string 
   }
 
   // 3. Save it, or explain why not.
+  if (check.tooBlurry) {
+    await discard();
+    return void (await reply(ctx, phone, unreadable));
+  }
   const resumeText = visual ? check.resumeText : text;
   if (!check.isResume || !check.summary || !resumeText?.trim()) {
     await discard();

@@ -7,7 +7,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "deploy": "convex deploy",
     "test:whatsapp": "node scripts/test-whatsapp.mjs",
-    "test:resume": "node scripts/test-resume.mjs"
+    "test:resume": "node scripts/test-resume.mjs",
+    "test:links": "node scripts/test-links-photos.mjs"
   },
   "keywords": [],
   "author": "",

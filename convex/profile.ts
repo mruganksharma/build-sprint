@@ -122,3 +122,10 @@ export const uploadUrl = internalMutation({
   returns: v.string(),
   handler: async (ctx) => await ctx.storage.generateUploadUrl(),
 });
+
+// A public address for a stored file. Used by the test script to make a "website" holding a made-up resume.
+export const fileUrl = internalQuery({
+  args: { fileId: v.id("_storage") },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, { fileId }) => await ctx.storage.getUrl(fileId),
+});

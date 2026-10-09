@@ -11,37 +11,61 @@ import type { ActionCtx } from "./_generated/server";
 import { internalAction } from "./_generated/server";
 import { rateLimiter } from "./limits";
 
-// Milestone 2: a WhatsApp user sends their resume (PDF, Word .docx, .txt, or pasted text).
-// We check it, read it, confirm with Claude that it's a resume, and save it to their profile.
+// Milestones 2 and 3: a WhatsApp user sends their resume as a PDF, Word .docx, .txt, pasted text,
+// a photo, or a link (website or Google Drive). We check it, read it, confirm with Claude that
+// it's a resume, and save it to their profile.
 
 const GRAPH_URL = "https://graph.facebook.com/v23.0";
 const MAX_BYTES = 1024 * 1024; // AGENTS.md: attachments up to 1 MB
-const MIN_PASTED_CHARS = 300; // shorter text messages are chat, not a pasted resume
+const MIN_PASTED_CHARS = 300; // shorter text messages are chat or a link, not a pasted resume
+const MIN_PAGE_CHARS = 200; // a web page with less text than this has nothing to read
 const MAX_RESUME_CHARS = 30000;
+const FETCH_TIMEOUT_MS = 10000;
 
-type Kind = "pdf" | "docx" | "txt";
+type Kind = "pdf" | "docx" | "txt" | "image";
 const KINDS: Record<string, Kind> = {
   "application/pdf": "pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
   "text/plain": "txt",
+  "image/jpeg": "image",
+  "image/png": "image",
 };
-const EXTENSIONS: Record<string, Kind> = { pdf: "pdf", docx: "docx", txt: "txt" };
+const EXTENSIONS: Record<string, Kind> = {
+  pdf: "pdf",
+  docx: "docx",
+  txt: "txt",
+  jpg: "image",
+  jpeg: "image",
+  png: "image",
+};
+const IMAGE_TYPES: Record<string, "image/jpeg" | "image/png"> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+};
 
 const REPLY = {
   welcome:
-    "Hi! Send me your resume and I'll find jobs that fit you. A PDF or Word file works, or paste it here as text.",
+    "Hi! Send me your resume and I'll find jobs that fit you. A PDF or Word file works, a photo of it, a link, or paste it here as text.",
   wrongFormat:
     "Sorry, I can't read that kind of file. Please send your resume as a PDF or Word (.docx) file, or paste it here as text.",
   tooBig: "That file is over 1 MB. Please send a smaller PDF or Word file, or paste your resume here as text.",
   angleBrackets: "Please send your resume without the < and > characters, or as a PDF or Word file.",
-  photo: "I can't read photos yet. Please send your resume as a PDF or Word file, or paste it here as text.",
+  photoUnclear:
+    "I couldn't read that photo clearly. Please send a sharper photo in good light, or your resume as a PDF or Word file.",
   notResume:
     "That doesn't look like a resume. Please send your resume as a PDF or Word file, or paste it here as text.",
   unreadable:
     "I couldn't read that file. Please try another PDF or Word file, or paste your resume here as text.",
+  linkedin:
+    "I can't open LinkedIn profiles. On a computer, open your LinkedIn profile, click More, then Save to PDF, and send me that PDF.",
+  drivePrivate:
+    "I couldn't open that Google Drive file. Please set its sharing to 'Anyone with the link' and send the link again, or send me the file itself.",
+  linkBroken: "I couldn't open that link. Please check it, or send your resume as a PDF or Word file.",
+  linkNoText:
+    "I couldn't find any text on that page. Please send your resume as a PDF or Word file, or paste it here as text.",
   busy: "Busy right now. Try again in a few minutes.",
-  saved: (summary: string) =>
-    `Got your resume: ${summary}. I'll use it to find jobs that fit you.`,
+  saved: (summary: string) => `Got your resume: ${summary}. I'll use it to find jobs that fit you.`,
 };
 
 const ResumeCheck = z.object({
@@ -54,7 +78,7 @@ const SYSTEM_PROMPT = `You read a document a job seeker sent to a job-finding ap
 
 isResume: true only if it is a resume or CV of a person.
 summary: if it is a resume, one factual line under 15 words: current role, years of experience, industry. Example: "Senior Product Manager, 11 years, B2B SaaS". No opinions or compliments about the person. Otherwise null.
-resumeText: if the document is a PDF and it is a resume, the full resume as plain text, keeping all content and dropping layout. Otherwise null.`;
+resumeText: if the document is a PDF or a photo and it is a resume, the full resume as plain text, keeping all content and dropping layout. If it is a resume but you can't read most of the text (blurry, cut off, too small), null. For anything else, null.`;
 
 const reply = (ctx: ActionCtx, to: string, text: string) =>
   ctx.scheduler.runAfter(0, internal.whatsapp.sendReply, { to, text });
@@ -72,13 +96,16 @@ export const handleIncoming = internalAction({
   returns: v.null(),
   handler: async (ctx, { phone, type, text, mediaId, fileName, mimeType }) => {
     if (type === "text") {
-      const body = text ?? "";
-      if (body.trim().length < MIN_PASTED_CHARS) return void (await reply(ctx, phone, REPLY.welcome));
+      const body = (text ?? "").trim();
+      const link = body.length < MIN_PASTED_CHARS ? findLink(body) : null;
+      if (link) return void (await readLink(ctx, phone, link));
+      if (body.length < MIN_PASTED_CHARS) return void (await reply(ctx, phone, REPLY.welcome));
       if (/[<>]/.test(body)) return void (await reply(ctx, phone, REPLY.angleBrackets));
       return void (await readAndSave(ctx, phone, { text: body }));
     }
-    if (type === "image") return void (await reply(ctx, phone, REPLY.photo));
-    if (type !== "document" || !mediaId) return void (await reply(ctx, phone, REPLY.wrongFormat));
+    if ((type !== "document" && type !== "image") || !mediaId) {
+      return void (await reply(ctx, phone, REPLY.wrongFormat));
+    }
 
     const kind = kindOf(mimeType, fileName);
     if (!kind) return void (await reply(ctx, phone, REPLY.wrongFormat));
@@ -87,7 +114,7 @@ export const handleIncoming = internalAction({
     if (download === "tooBig") return void (await reply(ctx, phone, REPLY.tooBig));
     if (!download) return void (await reply(ctx, phone, REPLY.unreadable));
     const fileId = await ctx.storage.store(new Blob([download], { type: mimeType }));
-    await readAndSave(ctx, phone, { fileId, kind, fileName });
+    await readAndSave(ctx, phone, { fileId, kind, fileName, mimeType });
     return null;
   },
 });
@@ -108,22 +135,20 @@ export const ingestFile = internalAction({
       await ctx.storage.delete(fileId);
       return void (await reply(ctx, phone, REPLY.wrongFormat));
     }
-    await readAndSave(ctx, phone, { fileId, kind, fileName });
+    await readAndSave(ctx, phone, { fileId, kind, fileName, mimeType });
     return null;
   },
 });
 
-async function readAndSave(
-  ctx: ActionCtx,
-  phone: string,
-  input: { text: string } | { fileId: Id<"_storage">; kind: Kind; fileName?: string },
-): Promise<void> {
-  // 1. Get the content: pasted text, or the stored file (size-checked).
-  let kind: Kind | "pasted" = "pasted";
+type FileInput = { fileId: Id<"_storage">; kind: Kind; fileName?: string; mimeType?: string };
+
+async function readAndSave(ctx: ActionCtx, phone: string, input: { text: string } | FileInput): Promise<void> {
+  // 1. Get the content: text, or the stored file (size-checked).
   let text: string | null = null;
-  let pdf: Buffer | null = null;
+  let visual: { kind: "pdf" | "image"; data: string; mediaType: string } | null = null;
   let fileId: Id<"_storage"> | undefined;
   let fileName: string | undefined;
+  let kind: Kind | "text" = "text";
   if ("text" in input) {
     text = input.text;
   } else {
@@ -135,23 +160,28 @@ async function readAndSave(
     }
     const bytes = Buffer.from(await blob.arrayBuffer());
     try {
-      if (kind === "pdf") pdf = bytes;
+      if (kind === "pdf") visual = { kind, data: bytes.toString("base64"), mediaType: "application/pdf" };
+      else if (kind === "image") visual = { kind, data: bytes.toString("base64"), mediaType: imageType(input) };
       else if (kind === "docx") text = (await mammoth.extractRawText({ buffer: bytes })).value;
       else text = bytes.toString("utf8");
     } catch (e) {
       console.warn(`[resume] couldn't read ${kind} from ${phone}: ${String(e)}`);
     }
   }
-  if (!pdf && !text?.trim()) {
+  const unreadable = kind === "image" ? REPLY.photoUnclear : REPLY.unreadable;
+  const discard = async () => {
     if (fileId) await ctx.storage.delete(fileId);
-    return void (await reply(ctx, phone, REPLY.unreadable));
+  };
+  if (!visual && !text?.trim()) {
+    await discard();
+    return void (await reply(ctx, phone, unreadable));
   }
   text = text?.slice(0, MAX_RESUME_CHARS) ?? null;
 
-  // 2. Ask Claude: is it a resume, and a one-line summary (plus the text, for PDFs).
+  // 2. Ask Claude: is it a resume, and a one-line summary (plus the text, for PDFs and photos).
   const { ok } = await rateLimiter.limit(ctx, "claudeCalls");
   if (!ok) {
-    if (fileId) await ctx.storage.delete(fileId);
+    await discard();
     return void (await reply(ctx, phone, REPLY.busy));
   }
   let check: z.infer<typeof ResumeCheck> | null = null;
@@ -164,13 +194,22 @@ async function readAndSave(
       messages: [
         {
           role: "user",
-          content: pdf
+          content: visual
             ? [
-                {
-                  type: "document",
-                  source: { type: "base64", media_type: "application/pdf", data: pdf.toString("base64") },
-                },
-                { type: "text", text: "This is a PDF." },
+                visual.kind === "pdf"
+                  ? {
+                      type: "document" as const,
+                      source: { type: "base64" as const, media_type: "application/pdf" as const, data: visual.data },
+                    }
+                  : {
+                      type: "image" as const,
+                      source: {
+                        type: "base64" as const,
+                        media_type: visual.mediaType as "image/jpeg" | "image/png",
+                        data: visual.data,
+                      },
+                    },
+                { type: "text" as const, text: visual.kind === "pdf" ? "This is a PDF." : "This is a photo." },
               ]
             : `<document>\n${text}\n</document>`,
         },
@@ -182,15 +221,15 @@ async function readAndSave(
     console.warn(`[resume] Claude call failed for ${phone}: ${String(e)}`);
   }
   if (!check) {
-    if (fileId) await ctx.storage.delete(fileId);
+    await discard();
     return void (await reply(ctx, phone, REPLY.busy));
   }
 
   // 3. Save it, or explain why not.
-  const resumeText = pdf ? check.resumeText : text;
+  const resumeText = visual ? check.resumeText : text;
   if (!check.isResume || !check.summary || !resumeText?.trim()) {
-    if (fileId) await ctx.storage.delete(fileId);
-    return void (await reply(ctx, phone, check.isResume ? REPLY.unreadable : REPLY.notResume));
+    await discard();
+    return void (await reply(ctx, phone, check.isResume ? unreadable : REPLY.notResume));
   }
   await ctx.runMutation(internal.profile.saveUserResume, {
     phone,
@@ -202,10 +241,130 @@ async function readAndSave(
   await reply(ctx, phone, REPLY.saved(check.summary.replace(/\.$/, "")));
 }
 
+// ---------- links ----------
+
+function findLink(text: string): URL | null {
+  const match = text.match(/(?:https?:\/\/|www\.)[^\s<>"']+/i);
+  if (!match) return null;
+  try {
+    const url = new URL(match[0].startsWith("www.") ? `https://${match[0]}` : match[0]);
+    return url.protocol === "https:" || url.protocol === "http:" ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+// Only fetch ordinary public web addresses: no bare IP addresses, no local or internal names.
+function isPublicHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, "");
+  if (!h.includes(".") || /^[\d.]+$/.test(h) || h.includes(":")) return false;
+  return !/(^|\.)(localhost|local|internal|lan|home|corp)$/.test(h);
+}
+
+// Google Drive and Docs share links point at a viewer page; this finds the direct download address.
+function driveDownloadUrl(url: URL): string | null {
+  const host = url.hostname.toLowerCase();
+  if (host === "drive.google.com") {
+    const id = url.pathname.match(/\/file\/d\/([\w-]+)/)?.[1] ?? url.searchParams.get("id");
+    return id ? `https://drive.google.com/uc?export=download&id=${id}` : null;
+  }
+  if (host === "docs.google.com") {
+    const id = url.pathname.match(/\/document\/d\/([\w-]+)/)?.[1];
+    return id ? `https://docs.google.com/document/d/${id}/export?format=txt` : null;
+  }
+  return null;
+}
+
+async function readLink(ctx: ActionCtx, phone: string, url: URL): Promise<void> {
+  const host = url.hostname.toLowerCase();
+  if (host === "linkedin.com" || host.endsWith(".linkedin.com")) return void (await reply(ctx, phone, REPLY.linkedin));
+  if (!isPublicHost(host)) return void (await reply(ctx, phone, REPLY.linkBroken));
+
+  const isDrive = host === "drive.google.com" || host === "docs.google.com";
+  const target = isDrive ? driveDownloadUrl(url) : url.toString();
+  if (!target) return void (await reply(ctx, phone, REPLY.drivePrivate));
+  const failed = isDrive ? REPLY.drivePrivate : REPLY.linkBroken;
+
+  let res: Response;
+  try {
+    res = await fetch(target, { redirect: "follow", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+  } catch (e) {
+    console.warn(`[resume] couldn't fetch ${target}: ${String(e)}`);
+    return void (await reply(ctx, phone, failed));
+  }
+  if (!res.ok || !isPublicHost(new URL(res.url).hostname)) return void (await reply(ctx, phone, failed));
+
+  const body = await readCapped(res);
+  if (body === "tooBig") return void (await reply(ctx, phone, REPLY.tooBig));
+  if (!body) return void (await reply(ctx, phone, failed));
+
+  const mimeType = (res.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  if (mimeType === "text/html") {
+    // A private Drive file answers with Google's sign-in page instead of the file.
+    if (isDrive) return void (await reply(ctx, phone, REPLY.drivePrivate));
+    const pageText = htmlToText(body.toString("utf8"));
+    if (pageText.length < MIN_PAGE_CHARS) return void (await reply(ctx, phone, REPLY.linkNoText));
+    return void (await readAndSave(ctx, phone, { text: pageText }));
+  }
+  const fileName = url.pathname.split("/").pop() || url.hostname;
+  const kind = KINDS[mimeType] ?? kindOf(undefined, fileName);
+  if (!kind) return void (await reply(ctx, phone, REPLY.wrongFormat));
+  const fileId = await ctx.storage.store(new Blob([new Uint8Array(body)], { type: mimeType }));
+  await readAndSave(ctx, phone, { fileId, kind, fileName: url.toString(), mimeType });
+}
+
+// Reads a response body, giving up past 1 MB.
+async function readCapped(res: Response): Promise<Buffer | "tooBig" | null> {
+  if (Number(res.headers.get("content-length") ?? 0) > MAX_BYTES) return "tooBig";
+  if (!res.body) return null;
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_BYTES) {
+        await reader.cancel();
+        return "tooBig";
+      }
+      chunks.push(value);
+    }
+  } catch (e) {
+    console.warn(`[resume] link download stopped: ${String(e)}`);
+    return null;
+  }
+  return Buffer.concat(chunks);
+}
+
+function htmlToText(html: string): string {
+  return html
+    .replace(/<(script|style|noscript|svg|head)[\s\S]*?<\/\1>/gi, " ")
+    .replace(/<br\s*\/?>|<\/(p|div|li|h[1-6]|tr|section)>/gi, "\n")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "‹")
+    .replace(/&gt;/g, "›")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&#x27;/g, "'")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\s*\n\s*/g, "\n")
+    .trim();
+}
+
+// ---------- files ----------
+
 function kindOf(mimeType?: string, fileName?: string): Kind | null {
   if (mimeType && KINDS[mimeType]) return KINDS[mimeType];
   const ext = fileName?.split(".").pop()?.toLowerCase();
   return (ext && EXTENSIONS[ext]) || null;
+}
+
+function imageType({ mimeType, fileName }: FileInput): string {
+  if (mimeType === "image/jpeg" || mimeType === "image/png") return mimeType;
+  return IMAGE_TYPES[fileName?.split(".").pop()?.toLowerCase() ?? ""] ?? "image/jpeg";
 }
 
 // WhatsApp sends a media id: swap it for a short-lived link, then download with the access token.

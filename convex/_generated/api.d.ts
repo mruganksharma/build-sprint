@@ -8,6 +8,8 @@
  * @module
  */
 
+import type * as chat from "../chat.js";
+import type * as chatText from "../chatText.js";
 import type * as http from "../http.js";
 import type * as jobs from "../jobs.js";
 import type * as limits from "../limits.js";
@@ -22,6 +24,8 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  chat: typeof chat;
+  chatText: typeof chatText;
   http: typeof http;
   jobs: typeof jobs;
   limits: typeof limits;

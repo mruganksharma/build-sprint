@@ -12,6 +12,15 @@ export const preferencesValidator = v.object({
   days: v.optional(v.number()), // how far back to look
 });
 
+// Which question a WhatsApp user is answering after sending their resume.
+export const stageValidator = v.union(
+  v.literal("industry_choice"), // same industry or different?
+  v.literal("industry_input"), // which industry?
+  v.literal("location_choice"), // where you are now, or somewhere else?
+  v.literal("location_input"), // which city?
+  v.literal("ready"), // all answered
+);
+
 export default defineSchema({
   // One row per user: the resume text the job finder compares against, and their preferences.
   // WhatsApp users are keyed by phone. The row with no phone is the owner's own, set from the terminal.
@@ -22,6 +31,10 @@ export default defineSchema({
     resumeFileId: v.optional(v.id("_storage")), // the original file, if they sent one
     resumeFileName: v.optional(v.string()),
     preferences: v.optional(preferencesValidator),
+    // WhatsApp users: what the resume says today, and where they are in the questions after it.
+    currentIndustry: v.optional(v.string()),
+    currentLocation: v.optional(v.string()),
+    stage: v.optional(stageValidator),
     updatedAt: v.number(),
   }).index("by_phone", ["phone"]),
 

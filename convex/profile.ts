@@ -1,7 +1,8 @@
 import { v } from "convex/values";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation, internalQuery } from "./_generated/server";
-import { preferencesValidator } from "./schema";
+import { startQuestions } from "./chat";
+import { preferencesValidator, stageValidator } from "./schema";
 
 // The owner's own row (no phone), used by the terminal commands below.
 const ownerRow = (ctx: QueryCtx | MutationCtx) =>
@@ -54,7 +55,8 @@ export const getPreferences = internalQuery({
   },
 });
 
-// A WhatsApp user's resume. Replaces their previous one (and deletes the old file).
+// A WhatsApp user's resume. Replaces their previous one (and deletes the old file), then starts
+// the questions about what they're looking for. Returns the first question.
 export const saveUserResume = internalMutation({
   args: {
     phone: v.string(),
@@ -62,8 +64,10 @@ export const saveUserResume = internalMutation({
     resumeSummary: v.string(),
     resumeFileId: v.optional(v.id("_storage")),
     resumeFileName: v.optional(v.string()),
+    currentIndustry: v.optional(v.string()),
+    currentLocation: v.optional(v.string()),
   },
-  returns: v.null(),
+  returns: v.string(),
   handler: async (ctx, args) => {
     const existing = await ctx.db
       .query("profile")
@@ -74,6 +78,8 @@ export const saveUserResume = internalMutation({
       resumeSummary: args.resumeSummary,
       resumeFileId: args.resumeFileId,
       resumeFileName: args.resumeFileName,
+      currentIndustry: args.currentIndustry,
+      currentLocation: args.currentLocation,
       updatedAt: Date.now(),
     };
     if (existing) {
@@ -81,10 +87,10 @@ export const saveUserResume = internalMutation({
         await ctx.storage.delete(existing.resumeFileId);
       }
       await ctx.db.patch(existing._id, fields);
-    } else {
-      await ctx.db.insert("profile", { phone: args.phone, ...fields });
+      return await startQuestions(ctx, { ...existing, ...fields });
     }
-    return null;
+    const id = await ctx.db.insert("profile", { phone: args.phone, ...fields });
+    return await startQuestions(ctx, (await ctx.db.get(id))!);
   },
 });
 
@@ -98,6 +104,10 @@ export const getByPhone = internalQuery({
       resumeTextLength: v.number(),
       resumeFileName: v.union(v.string(), v.null()),
       hasFile: v.boolean(),
+      currentIndustry: v.union(v.string(), v.null()),
+      currentLocation: v.union(v.string(), v.null()),
+      stage: v.union(stageValidator, v.null()),
+      preferences: v.union(preferencesValidator, v.null()),
     }),
     v.null(),
   ),
@@ -112,6 +122,10 @@ export const getByPhone = internalQuery({
       resumeTextLength: row.resumeText.length,
       resumeFileName: row.resumeFileName ?? null,
       hasFile: row.resumeFileId !== undefined,
+      currentIndustry: row.currentIndustry ?? null,
+      currentLocation: row.currentLocation ?? null,
+      stage: row.stage ?? null,
+      preferences: row.preferences ?? null,
     };
   },
 });

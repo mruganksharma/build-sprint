@@ -65,13 +65,15 @@ const REPLY = {
   linkNoText:
     "I couldn't find any text on that page. Please send your resume as a PDF or Word file, or paste it here as text.",
   busy: "Busy right now. Try again in a few minutes.",
-  saved: (summary: string) => `Got your resume: ${summary}. I'll use it to find jobs that fit you.`,
+  saved: (summary: string, question: string) => `Got your resume: ${summary}.\n\n${question}`,
 };
 
 const ResumeCheck = z.object({
   tooBlurry: z.boolean(),
   isResume: z.boolean(),
   summary: z.string().nullable(),
+  industry: z.string().nullable(),
+  location: z.string().nullable(),
   resumeText: z.string().nullable(),
 });
 
@@ -80,6 +82,8 @@ const SYSTEM_PROMPT = `You read a document a job seeker sent to a job-finding ap
 tooBlurry: true if it is a photo or PDF where you can't make out most of the words (blurry, tiny, dark, cut off), so you can't tell what it is. Otherwise false.
 isResume: true only if it is a resume or CV of a person.
 summary: if it is a resume, one factual line under 15 words: current role, years of experience, industry. Example: "Senior Product Manager, 11 years, B2B SaaS". No opinions or compliments about the person. Otherwise null.
+industry: if it is a resume, the industry of their most recent job in 1 to 3 words, e.g. "B2B SaaS", "Fintech", "Healthcare". Null if unclear or not a resume.
+location: if it is a resume and it says where they live, just the city, e.g. "Bengaluru". Otherwise null.
 resumeText: if the document is a PDF or a photo and it is a resume, the full resume as plain text, keeping all content and dropping layout. If it is a resume but you can't read most of the text (blurry, cut off, too small), null. For anything else, null.`;
 
 const reply = (ctx: ActionCtx, to: string, text: string) =>
@@ -101,7 +105,11 @@ export const handleIncoming = internalAction({
       const body = (text ?? "").trim();
       const link = body.length < MIN_PASTED_CHARS ? findLink(body) : null;
       if (link) return void (await readLink(ctx, phone, link));
-      if (body.length < MIN_PASTED_CHARS) return void (await reply(ctx, phone, REPLY.welcome));
+      if (body.length < MIN_PASTED_CHARS) {
+        // A short answer to one of the questions after the resume, or a hello from someone new.
+        const answer = await ctx.runMutation(internal.chat.handleAnswer, { phone, text: body });
+        return void (await reply(ctx, phone, answer ?? REPLY.welcome));
+      }
       if (/[<>]/.test(body)) return void (await reply(ctx, phone, REPLY.angleBrackets));
       return void (await readAndSave(ctx, phone, { text: body }));
     }
@@ -237,14 +245,16 @@ async function readAndSave(ctx: ActionCtx, phone: string, input: { text: string 
     await discard();
     return void (await reply(ctx, phone, check.isResume ? unreadable : REPLY.notResume));
   }
-  await ctx.runMutation(internal.profile.saveUserResume, {
+  const firstQuestion = await ctx.runMutation(internal.profile.saveUserResume, {
     phone,
     resumeText: resumeText.slice(0, MAX_RESUME_CHARS),
     resumeSummary: check.summary,
     resumeFileId: fileId,
     resumeFileName: fileName,
+    currentIndustry: check.industry ?? undefined,
+    currentLocation: check.location ?? undefined,
   });
-  await reply(ctx, phone, REPLY.saved(check.summary.replace(/\.$/, "")));
+  await reply(ctx, phone, REPLY.saved(check.summary.replace(/\.$/, ""), firstQuestion));
 }
 
 // ---------- links ----------

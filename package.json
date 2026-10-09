@@ -8,7 +8,8 @@
     "deploy": "convex deploy",
     "test:whatsapp": "node scripts/test-whatsapp.mjs",
     "test:resume": "node scripts/test-resume.mjs",
-    "test:links": "node scripts/test-links-photos.mjs"
+    "test:links": "node scripts/test-links-photos.mjs",
+    "test:preferences": "node scripts/test-preferences.mjs"
   },
   "keywords": [],
   "author": "",

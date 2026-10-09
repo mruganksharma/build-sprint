@@ -116,3 +116,13 @@ export async function runCases(cases) {
     check(c.name, savedOk && !!c.got && c.reply.test(c.got), `reply: ${c.got}`);
   }
 }
+
+// Waits until the app has sent `count` replies to a number; returns the newest one.
+export async function waitForReplies(phone, count) {
+  for (let i = 0; i < 60; i++) {
+    const out = run("whatsapp:messagesForPhone", { phone }).filter((m) => m.direction === "out");
+    if (out.length >= count) return out.at(-1).text;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  return null;
+}

@@ -1,0 +1,19 @@
+# secrets
+.env
+.env.*
+*.key
+
+# libraries (reinstall with npm install)
+node_modules/
+
+# resumes / CVs — never commit personal documents
+*resume*
+*Resume*
+*RESUME*
+*cv.*
+*CV.*
+*.pdf
+*.docx
+
+# system junk
+.DS_Store

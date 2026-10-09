@@ -1,0 +1,5 @@
+interface:
+  display_name: "Grill Me"
+  short_description: "Interview you until the plan is clear, before any code"
+policy:
+  allow_implicit_invocation: true

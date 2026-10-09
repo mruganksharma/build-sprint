@@ -2,9 +2,10 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import { v } from "convex/values";
+import { type Infer, v } from "convex/values";
 import { z } from "zod";
 import { internal } from "./_generated/api";
+import type { Doc } from "./_generated/dataModel";
 import { internalAction } from "./_generated/server";
 
 // Milestone 1: find Senior PM jobs on LinkedIn's public (no-login) job search,
@@ -90,6 +91,7 @@ const FitSchema = z.object({
   fit: z.enum(["strong", "partial", "not_a_fit"]),
   reason: z.string(),
   caveat: z.string().nullable(),
+  brokenPreference: z.string().nullable(),
 });
 
 const SYSTEM_PROMPT = `You screen job postings for one candidate. You get the candidate's resume and one job description.
@@ -101,7 +103,9 @@ Decide how well the job fits the candidate:
 
 reason: one plain-English line, under 25 words, saying why. Name the specific overlap or gap (e.g. "B2B SaaS + risk products match; JD wants fintech payments, which the resume doesn't show").
 caveat: one short line if something needs flagging (e.g. "JD asks for 15+ years", "role may be hybrid in Pune"), otherwise null.
-Judge only from the resume and job description given. Don't invent facts about the candidate.`;
+Judge only from the resume and job description given. Don't invent facts about the candidate.
+
+The candidate may also give preferences. Treat them as hard rules: if the job clearly breaks any one of them, fit is "not_a_fit" and brokenPreference names the rule in a few words (e.g. "avoid banks: this is a bank"). If it breaks none, or there are no preferences, brokenPreference is null. Preferences never make a job a better fit than the resume supports.`;
 
 const matchValidator = v.object({
   title: v.string(),
@@ -114,6 +118,8 @@ const matchValidator = v.object({
   url: v.string(),
 });
 
+type Match = Infer<typeof matchValidator>;
+
 export const findMatches = internalAction({
   args: {
     keywords: v.optional(v.string()),
@@ -125,11 +131,27 @@ export const findMatches = internalAction({
     summary: v.string(),
     matches: v.array(matchValidator),
   }),
-  handler: async (ctx, args) => {
-    const keywords = args.keywords ?? "Senior Product Manager";
-    const location = args.location ?? "Mumbai, Maharashtra, India";
-    const days = args.days ?? 7;
-    const search = `"${keywords}" in ${location}, last ${days} days`;
+  handler: async (ctx, args): Promise<{ search: string; summary: string; matches: Match[] }> => {
+    const prefs: Doc<"profile">["preferences"] | null = await ctx.runQuery(internal.profile.getPreferences, {});
+    const keywords = args.keywords ?? prefs?.role ?? "Senior Product Manager";
+    const location = args.location ?? prefs?.location ?? "Mumbai, Maharashtra, India";
+    const days = args.days ?? prefs?.days ?? 7;
+
+    // One LinkedIn search per wanted industry (e.g. "Senior Product Manager B2B SaaS"), else just the role.
+    const queries = prefs?.industries?.length
+      ? prefs.industries.map((industry) => `${keywords} ${industry}`)
+      : [keywords];
+    const pagesPerQuery = Math.max(1, Math.floor(MAX_PAGES / queries.length));
+    const search = `${queries.map((q) => `"${q}"`).join(" + ")} in ${location}, last ${days} days`;
+
+    const rules = [
+      prefs?.industries?.length ? `Job must be in one of these industries: ${prefs.industries.join(", ")}` : null,
+      prefs?.avoid?.length ? `Avoid these industries or companies: ${prefs.avoid.join(", ")}` : null,
+      ...(prefs?.mustHaves ?? []).map((rule) => `Must have: ${rule}`),
+    ].filter((rule): rule is string => rule !== null);
+    const preferencesBlock = rules.length
+      ? `\n\n<preferences>\n${rules.map((rule) => `- ${rule}`).join("\n")}\n</preferences>`
+      : "";
 
     const resume = await ctx.runQuery(internal.profile.getResume, {});
     if (!resume) {
@@ -138,18 +160,20 @@ export const findMatches = internalAction({
 
     // 1. Fetch job cards from LinkedIn's public search, a few pages at most.
     const cards: Card[] = [];
-    for (let page = 0; page < MAX_PAGES; page++) {
-      const params = new URLSearchParams({
-        keywords,
-        location,
-        f_TPR: `r${days * 24 * 60 * 60}`,
-        start: String(page * PAGE_SIZE),
-      });
-      const html = await fetchText(`${SEARCH_URL}?${params}`);
-      const pageCards = parseCards(html);
-      cards.push(...pageCards);
-      if (pageCards.length < PAGE_SIZE) break;
-      await sleep(PAUSE_MS);
+    for (const query of queries) {
+      for (let page = 0; page < pagesPerQuery; page++) {
+        const params = new URLSearchParams({
+          keywords: query,
+          location,
+          f_TPR: `r${days * 24 * 60 * 60}`,
+          start: String(page * PAGE_SIZE),
+        });
+        const html = await fetchText(`${SEARCH_URL}?${params}`);
+        const pageCards = parseCards(html);
+        cards.push(...pageCards);
+        await sleep(PAUSE_MS);
+        if (pageCards.length < PAGE_SIZE) break;
+      }
     }
 
     // 2. Drop old postings, non-PM titles, and duplicates (same id, or same title + company).
@@ -204,7 +228,7 @@ export const findMatches = internalAction({
           messages: [
             {
               role: "user",
-              content: `<resume>\n${resume}\n</resume>\n\n<job>\nTitle: ${card.title}\nCompany: ${card.company}\nLocation: ${card.location}\n\n${jd}\n</job>`,
+              content: `<resume>\n${resume}\n</resume>\n\n<job>\nTitle: ${card.title}\nCompany: ${card.company}\nLocation: ${card.location}\n\n${jd}\n</job>${preferencesBlock}`,
             },
           ],
         });
@@ -226,7 +250,7 @@ export const findMatches = internalAction({
     const matches = candidates
       .flatMap((card) => {
         const verdict = verdicts.get(card.jobId);
-        if (!verdict || verdict.fit === "not_a_fit") return [];
+        if (!verdict || verdict.fit === "not_a_fit" || verdict.brokenPreference) return [];
         return [{
           title: card.title,
           company: card.company,
@@ -242,11 +266,14 @@ export const findMatches = internalAction({
         b.postedOn.localeCompare(a.postedOn) || (a.fit === "strong" ? -1 : 1) - (b.fit === "strong" ? -1 : 1),
       );
 
-    const notAFit = [...verdicts.values()].filter((x) => x.fit === "not_a_fit").length;
+    const brokePreference = [...verdicts.values()].filter((x) => x.brokenPreference).length;
+    const notAFit = [...verdicts.values()].filter((x) => x.fit === "not_a_fit" && !x.brokenPreference).length;
     const unchecked = candidates.length - verdicts.size;
     let summary =
       `LinkedIn returned ${cards.length} jobs. Dropped: ${tooOld} older than ${days} days, ` +
-      `${wrongTitle} not a senior PM title, ${duplicates} duplicates, ${notAFit} not a real fit` +
+      `${wrongTitle} not a senior PM title, ${duplicates} duplicates, ` +
+      (rules.length ? `${brokePreference} broke your preferences, ` : "") +
+      `${notAFit} not a real fit` +
       (unchecked ? `, ${unchecked} couldn't be checked` : "") +
       `. ${matches.length} left.`;
     if (matches.length === 0) {

@@ -7,6 +7,7 @@ import { z } from "zod";
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import { internalAction } from "./_generated/server";
+import { rateLimiter } from "./limits";
 
 // Milestone 1: find Senior PM jobs on LinkedIn's public (no-login) job search,
 // check each against the saved resume with Claude, and return the ones that fit.
@@ -219,6 +220,11 @@ export const findMatches = internalAction({
     const checkFit = async (card: Card) => {
       const jd = descriptions.get(card.jobId);
       if (!jd) return;
+      const { ok } = await rateLimiter.limit(ctx, "claudeCalls");
+      if (!ok) {
+        console.warn(`Hourly Claude limit reached; skipped job ${card.jobId}`);
+        return;
+      }
       try {
         const response = await client.messages.parse({
           model: "claude-opus-5-5",

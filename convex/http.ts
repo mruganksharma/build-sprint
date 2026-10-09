@@ -22,7 +22,7 @@ http.route({
   }),
 });
 
-// Every user message arrives here. Check Meta's signature, save, reply, and answer 200 fast.
+// Every user message arrives here. Check Meta's signature, save, hand it on, and answer 200 fast.
 http.route({
   path: "/whatsapp",
   method: "POST",
@@ -55,9 +55,13 @@ http.route({
             mimeType: media?.mime_type,
           });
           if (isNew) {
-            await ctx.scheduler.runAfter(0, internal.whatsapp.sendReply, {
-              to: msg.from,
-              text: "Got it. I'm still being built, I'll have jobs for you soon.",
+            await ctx.scheduler.runAfter(0, internal.resume.handleIncoming, {
+              phone: msg.from,
+              type: msg.type,
+              text: msg.text?.body,
+              mediaId: media?.id,
+              fileName: msg.document?.filename,
+              mimeType: media?.mime_type,
             });
           }
         }

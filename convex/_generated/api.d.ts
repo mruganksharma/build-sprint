@@ -10,7 +10,9 @@
 
 import type * as http from "../http.js";
 import type * as jobs from "../jobs.js";
+import type * as limits from "../limits.js";
 import type * as profile from "../profile.js";
+import type * as resume from "../resume.js";
 import type * as whatsapp from "../whatsapp.js";
 
 import type {
@@ -22,7 +24,9 @@ import type {
 declare const fullApi: ApiFromModules<{
   http: typeof http;
   jobs: typeof jobs;
+  limits: typeof limits;
   profile: typeof profile;
+  resume: typeof resume;
   whatsapp: typeof whatsapp;
 }>;
 
@@ -52,4 +56,6 @@ export declare const internal: FilterApi<
   FunctionReference<any, "internal">
 >;
 
-export declare const components: {};
+export declare const components: {
+  rateLimiter: import("@convex-dev/rate-limiter/_generated/component.js").ComponentApi<"rateLimiter">;
+};

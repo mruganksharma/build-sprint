@@ -13,12 +13,17 @@ export const preferencesValidator = v.object({
 });
 
 export default defineSchema({
-  // One row: the resume text the job finder compares against, and the user's preferences.
+  // One row per user: the resume text the job finder compares against, and their preferences.
+  // WhatsApp users are keyed by phone. The row with no phone is the owner's own, set from the terminal.
   profile: defineTable({
+    phone: v.optional(v.string()),
     resumeText: v.string(),
+    resumeSummary: v.optional(v.string()), // e.g. "Senior Product Manager, 11 years, B2B SaaS"
+    resumeFileId: v.optional(v.id("_storage")), // the original file, if they sent one
+    resumeFileName: v.optional(v.string()),
     preferences: v.optional(preferencesValidator),
     updatedAt: v.number(),
-  }),
+  }).index("by_phone", ["phone"]),
 
   // Every WhatsApp message, in and out, one row each. Phone is the user's WhatsApp number.
   messages: defineTable({

@@ -6,14 +6,17 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "deploy": "convex deploy",
-    "test:whatsapp": "node scripts/test-whatsapp.mjs"
+    "test:whatsapp": "node scripts/test-whatsapp.mjs",
+    "test:resume": "node scripts/test-resume.mjs"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "@anthropic-ai/sdk": "^0.132.1",
+    "@convex-dev/rate-limiter": "^0.4.1",
     "convex": "^1.46.0",
+    "mammoth": "^1.13.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {

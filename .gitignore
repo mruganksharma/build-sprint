@@ -7,13 +7,12 @@
 node_modules/
 
 # resumes / CVs — never commit personal documents
-*resume*
-*Resume*
-*RESUME*
-*cv.*
-*CV.*
 *.pdf
+*.doc
 *.docx
+*[Rr]esume*.txt
+*RESUME*.txt
+*[Cc][Vv].txt
 
 # system junk
 .DS_Store

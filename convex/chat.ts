@@ -13,6 +13,12 @@ import {
   noAngleBrackets,
   pleaseChoose,
   readyHelp,
+  DAYS,
+  daysQuestion,
+  noListYet,
+  noSuchJob,
+  portalNoted,
+  ratedJob,
   searchingAgain,
   stillSearching,
   likedReply,
@@ -64,7 +70,7 @@ export const handleAnswer = internalMutation({
       case "location_choice": {
         const current = row.currentLocation ?? "";
         if (word === "1" || word.startsWith("same") || word === current.toLowerCase()) {
-          return finish(ctx, row, current);
+          return askDays(ctx, row, current);
         }
         if (word === "2" || word.startsWith("somewhere") || word.startsWith("diff") || word.startsWith("else")) {
           await ctx.db.patch(row._id, { stage: "location_input", updatedAt: Date.now() });
@@ -74,23 +80,34 @@ export const handleAnswer = internalMutation({
       }
       case "location_input": {
         const pick = Number(word);
-        if (Number.isInteger(pick) && pick >= 1 && pick <= METROS.length) return finish(ctx, row, METROS[pick - 1]);
+        if (Number.isInteger(pick) && pick >= 1 && pick <= METROS.length) return askDays(ctx, row, METROS[pick - 1]);
         if (!/\p{L}/u.test(answer) || answer.length > MAX_CITY_CHARS) return metroQuestion;
-        return finish(ctx, row, answer);
+        return askDays(ctx, row, answer);
+      }
+      case "days_choice": {
+        // Check 30 and 7 before 24: "last 30 days" also contains "day".
+        const days =
+          word === "3" || /\b30\b|month/.test(word) ? 30
+          : word === "2" || /\b7\b|week/.test(word) ? 7
+          : word === "1" || /\b24\b|\bday\b|today|hours?/.test(word) ? 1
+          : null;
+        if (!days) return `Please reply 1, 2 or 3.\n\n${daysQuestion}`;
+        return finish(ctx, row, days);
+      }
+      case "portal_input": {
+        await ctx.db.patch(row._id, { stage: "ready", updatedAt: Date.now() });
+        const asReady = { ...row, stage: "ready" as const };
+        if (isCommand(word) || !/\p{L}/u.test(answer) || answer.length > MAX_CITY_CHARS) return readyAnswer(ctx, asReady, word);
+        const portals = [...(row.preferences?.portals ?? []).filter((p) => p.toLowerCase() !== word), answer].slice(-MAX_FEEDBACK);
+        await ctx.db.patch(row._id, { preferences: { ...row.preferences, portals } });
+        return portalNoted(answer);
       }
       case "job_feedback": {
         const job = row.pendingJob ?? "";
         const yes = word === "1" || word.startsWith("yes");
         const no = word === "2" || word.startsWith("no");
         if (yes || no) {
-          const key = yes ? "likes" : "dislikes";
-          const other = yes ? "dislikes" : "likes";
-          const preferences = {
-            ...row.preferences,
-            [key]: [...(row.preferences?.[key] ?? []).filter((j) => j !== job), job].slice(-MAX_FEEDBACK),
-            [other]: (row.preferences?.[other] ?? []).filter((j) => j !== job),
-          };
-          await ctx.db.patch(row._id, { preferences, stage: "ready", pendingJob: undefined, updatedAt: Date.now() });
+          await saveFeedback(ctx, row, job, yes, { stage: "ready", pendingJob: undefined });
           return yes ? likedReply : dislikedReply;
         }
         // Anything else: drop the question and treat it as a normal message.
@@ -106,6 +123,8 @@ export const handleAnswer = internalMutation({
 // After the questions: "change", "jobs", or anything else.
 async function readyAnswer(ctx: MutationCtx, row: Doc<"profile">, word: string): Promise<string> {
   if (/^(change|update|preferences?)$/.test(word)) return startQuestions(ctx, row);
+  const rating = parseRating(word);
+  if (rating && row.stage === "ready") return rateFromList(ctx, row, rating.n, rating.yes);
   if (/^(jobs?|search|more|again)$/.test(word) && row.stage === "ready") {
     if (row.searchStartedAt && Date.now() - row.searchStartedAt < SEARCH_LOCK_MS) return stillSearching;
     await ctx.scheduler.runAfter(0, internal.jobs.searchForUser, { phone: row.phone!, announce: false });
@@ -143,9 +162,80 @@ async function askLocation(ctx: MutationCtx, row: Doc<"profile">, update: { indu
   return row.currentLocation ? locationQuestion(row.currentLocation) : metroQuestion;
 }
 
-async function finish(ctx: MutationCtx, row: Doc<"profile">, location: string) {
+async function askDays(ctx: MutationCtx, row: Doc<"profile">, location: string) {
   const preferences = { ...row.preferences, location };
+  await ctx.db.patch(row._id, { preferences, stage: "days_choice", updatedAt: Date.now() });
+  return daysQuestion;
+}
+
+async function finish(ctx: MutationCtx, row: Doc<"profile">, days: number) {
+  const preferences = { ...row.preferences, days };
   await ctx.db.patch(row._id, { preferences, stage: "ready", updatedAt: Date.now() });
   await ctx.scheduler.runAfter(0, internal.jobs.searchForUser, { phone: row.phone!, announce: false });
-  return allSet(preferences.industries ?? [], location);
+  return allSet(preferences.industries ?? [], preferences.location ?? "India", days);
 }
+
+const isCommand = (word: string) => /^(change|update|preferences?|jobs?|search|more|again)$/.test(word);
+
+// "3 no", "no 3", "1 yes", "2: y" → which job in the last list, and liked or not.
+function parseRating(word: string): { n: number; yes: boolean } | null {
+  const m = word.match(/^(\d{1,2})\s*[-:,.]?\s*(yes|no|y|n)$/) ?? word.match(/^(yes|no|y|n)\s*[-:,.]?\s*(\d{1,2})$/);
+  if (!m) return null;
+  const [num, answer] = /^\d/.test(m[1]) ? [m[1], m[2]] : [m[2], m[1]];
+  return { n: Number(num), yes: answer.startsWith("y") };
+}
+
+async function rateFromList(ctx: MutationCtx, row: Doc<"profile">, n: number, yes: boolean): Promise<string> {
+  const phone = row.phone!;
+  const recent = await ctx.db
+    .query("searches")
+    .withIndex("by_phone", (q) => q.eq("phone", phone))
+    .order("desc")
+    .take(10);
+  const last = recent.find((search) => search.shown?.length);
+  if (!last?.shown?.length) return noListYet;
+  const jobId = last.shown[n - 1];
+  if (!jobId) return noSuchJob(n);
+  const seen = await ctx.db
+    .query("jobsSeen")
+    .withIndex("by_phone_and_jobId", (q) => q.eq("phone", phone).eq("jobId", jobId))
+    .order("desc")
+    .first();
+  if (!seen) return noSuchJob(n);
+  const job = `${seen.title} at ${seen.company}`;
+  await saveFeedback(ctx, row, job, yes, {});
+  return ratedJob(job, yes);
+}
+
+// Adds a job to likes (or dislikes), removing it from the other list. Keeps the most recent few.
+async function saveFeedback(
+  ctx: MutationCtx,
+  row: Doc<"profile">,
+  job: string,
+  yes: boolean,
+  extra: Partial<Doc<"profile">>,
+) {
+  const key = yes ? "likes" : "dislikes";
+  const other = yes ? "dislikes" : "likes";
+  const preferences = {
+    ...row.preferences,
+    [key]: [...(row.preferences?.[key] ?? []).filter((j) => j !== job), job].slice(-MAX_FEEDBACK),
+    [other]: (row.preferences?.[other] ?? []).filter((j) => j !== job),
+  };
+  await ctx.db.patch(row._id, { ...extra, preferences, updatedAt: Date.now() });
+}
+
+// Called when a search found nothing that fits: ask which other job site they'd like.
+export const askPortal = internalMutation({
+  args: { phone: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, { phone }) => {
+    const row = await ctx.db
+      .query("profile")
+      .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .first();
+    if (!row || row.stage !== "ready") return false;
+    await ctx.db.patch(row._id, { stage: "portal_input", updatedAt: Date.now() });
+    return true;
+  },
+});

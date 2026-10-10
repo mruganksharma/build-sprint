@@ -4,6 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { v } from "convex/values";
 import mammoth from "mammoth";
+import WordExtractor from "word-extractor";
 import { z } from "zod";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
@@ -11,9 +12,9 @@ import type { ActionCtx } from "./_generated/server";
 import { internalAction } from "./_generated/server";
 import { rateLimiter } from "./limits";
 
-// Milestones 2 and 3: a WhatsApp user sends their resume as a PDF, Word .docx, .txt, pasted text,
-// a photo, or a link (website or Google Drive). We check it, read it, confirm with Claude that
-// it's a resume, and save it to their profile.
+// Milestones 2 and 3: a WhatsApp user sends their resume as a PDF, Word file (.docx or old .doc),
+// .txt, pasted text, one or more photos, or a link (website or Google Drive). We check it, read
+// it, confirm with Claude that it's a resume, and save it to their profile.
 
 const GRAPH_URL = "https://graph.facebook.com/v23.0";
 const MAX_BYTES = 1024 * 1024; // AGENTS.md: attachments up to 1 MB
@@ -21,11 +22,14 @@ const MIN_PASTED_CHARS = 300; // shorter text messages are chat or a link, not a
 const MIN_PAGE_CHARS = 200; // a web page with less text than this has nothing to read
 const MAX_RESUME_CHARS = 30000;
 const FETCH_TIMEOUT_MS = 10000;
+const PHOTO_WAIT_MS = 30000; // after a photo, wait this long for more pages before reading
+const MAX_PHOTOS = 5;
 
-type Kind = "pdf" | "docx" | "txt" | "image";
+type Kind = "pdf" | "docx" | "doc" | "txt" | "image";
 const KINDS: Record<string, Kind> = {
   "application/pdf": "pdf",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/msword": "doc",
   "text/plain": "txt",
   "image/jpeg": "image",
   "image/png": "image",
@@ -33,6 +37,7 @@ const KINDS: Record<string, Kind> = {
 const EXTENSIONS: Record<string, Kind> = {
   pdf: "pdf",
   docx: "docx",
+  doc: "doc",
   txt: "txt",
   jpg: "image",
   jpeg: "image",
@@ -48,11 +53,14 @@ const REPLY = {
   welcome:
     "Hi! Send me your resume and I'll find jobs that fit you. A PDF or Word file works, a photo of it, a link, or paste it here as text.",
   wrongFormat:
-    "Sorry, I can't read that kind of file. Please send your resume as a PDF or Word (.docx) file, or paste it here as text.",
+    "Sorry, I can't read that kind of file. Please send your resume as a PDF or Word file, or paste it here as text.",
   tooBig: "That file is over 1 MB. Please send a smaller PDF or Word file, or paste your resume here as text.",
   angleBrackets: "Please send your resume without the < and > characters, or as a PDF or Word file.",
   photoUnclear:
     "I couldn't read that photo clearly. Please send a sharper photo in good light, or your resume as a PDF or Word file.",
+  photoWait:
+    "Got your photo. If your resume has more pages, send them now; I'll read them together in a few seconds.",
+  tooManyPhotos: `I can read up to ${MAX_PHOTOS} photos of a resume. Please send a PDF or Word file instead.`,
   notResume:
     "That doesn't look like a resume. Please send your resume as a PDF or Word file, or paste it here as text.",
   unreadable:
@@ -75,10 +83,12 @@ const ResumeCheck = z.object({
   role: z.string().nullable(),
   industry: z.string().nullable(),
   location: z.string().nullable(),
+  email: z.string().nullable(),
+  linkedinUrl: z.string().nullable(),
   resumeText: z.string().nullable(),
 });
 
-const SYSTEM_PROMPT = `You read a document a job seeker sent to a job-finding app.
+const SYSTEM_PROMPT = `You read a document a job seeker sent to a job-finding app. It may be several photos of one resume, in page order.
 
 tooBlurry: true if it is a photo or PDF where you can't make out most of the words (blurry, tiny, dark, cut off), so you can't tell what it is. Otherwise false.
 isResume: true only if it is a resume or CV of a person.
@@ -86,7 +96,9 @@ summary: if it is a resume, one factual line under 15 words: current role, years
 role: if it is a resume, the job title to search job boards for: their most recent title in plain words, e.g. "Senior Product Manager", "Data Scientist", "Sales Manager". Null if unclear or not a resume.
 industry: if it is a resume, the industry of their most recent job in 1 to 3 words, e.g. "B2B SaaS", "Fintech", "Healthcare". Null if unclear or not a resume.
 location: if it is a resume and it says where they live, just the city, e.g. "Bengaluru". Otherwise null.
-resumeText: if the document is a PDF or a photo and it is a resume, the full resume as plain text, keeping all content and dropping layout. If it is a resume but you can't read most of the text (blurry, cut off, too small), null. For anything else, null.`;
+email: if it is a resume, the person's email address exactly as written. Otherwise null.
+linkedinUrl: if it is a resume, their LinkedIn profile address exactly as written. Otherwise null.
+resumeText: if the document is a PDF or photos and it is a resume, the full resume as plain text, keeping all content from every page and dropping layout. If it is a resume but you can't read most of the text (blurry, cut off, too small), null. For anything else, null.`;
 
 const reply = (ctx: ActionCtx, to: string, text: string) =>
   ctx.scheduler.runAfter(0, internal.whatsapp.sendReply, { to, text });
@@ -126,7 +138,8 @@ export const handleIncoming = internalAction({
     if (download === "tooBig") return void (await reply(ctx, phone, REPLY.tooBig));
     if (!download) return void (await reply(ctx, phone, REPLY.unreadable));
     const fileId = await ctx.storage.store(new Blob([download], { type: mimeType }));
-    await readAndSave(ctx, phone, { fileId, kind, fileName, mimeType });
+    if (kind === "image") await queuePhoto(ctx, phone, fileId, imageType({ mimeType, fileName }));
+    else await readAndSave(ctx, phone, { fileId, kind, fileName, mimeType });
     return null;
   },
 });
@@ -147,55 +160,114 @@ export const ingestFile = internalAction({
       await ctx.storage.delete(fileId);
       return void (await reply(ctx, phone, REPLY.wrongFormat));
     }
-    await readAndSave(ctx, phone, { fileId, kind, fileName, mimeType });
+    if (kind === "image") await queuePhoto(ctx, phone, fileId, imageType({ mimeType, fileName }));
+    else await readAndSave(ctx, phone, { fileId, kind, fileName, mimeType });
     return null;
   },
 });
 
-type FileInput = { fileId: Id<"_storage">; kind: Kind; fileName?: string; mimeType?: string };
+// ---------- photos: several pages sent one after another are read as one resume ----------
 
-async function readAndSave(ctx: ActionCtx, phone: string, input: { text: string } | FileInput): Promise<void> {
-  // 1. Get the content: text, or the stored file (size-checked).
+async function queuePhoto(ctx: ActionCtx, phone: string, fileId: Id<"_storage">, mimeType: string) {
+  const count = await ctx.runMutation(internal.photos.add, { phone, fileId, mimeType });
+  if (count > MAX_PHOTOS) {
+    await ctx.runMutation(internal.photos.clear, { phone });
+    return void (await reply(ctx, phone, REPLY.tooManyPhotos));
+  }
+  if (count === 1) await reply(ctx, phone, REPLY.photoWait);
+  await ctx.scheduler.runAfter(PHOTO_WAIT_MS, internal.resume.readPhotos, { phone, expected: count });
+}
+
+// Runs a few seconds after each photo. Only the run for the latest photo reads them; earlier
+// runs see that more photos came in after them and stop.
+export const readPhotos = internalAction({
+  args: { phone: v.string(), expected: v.number() },
+  returns: v.null(),
+  handler: async (ctx, { phone, expected }) => {
+    const photos = await ctx.runMutation(internal.photos.takeIfCount, { phone, expected });
+    if (photos) await readAndSave(ctx, phone, { photos });
+    return null;
+  },
+});
+
+// ---------- reading and saving ----------
+
+type FileInput = { fileId: Id<"_storage">; kind: Kind; fileName?: string; mimeType?: string };
+type PhotosInput = { photos: { fileId: Id<"_storage">; mimeType: string }[] };
+type Block =
+  | { type: "document"; source: { type: "base64"; media_type: "application/pdf"; data: string } }
+  | { type: "image"; source: { type: "base64"; media_type: "image/jpeg" | "image/png"; data: string } };
+
+async function readAndSave(ctx: ActionCtx, phone: string, input: { text: string } | FileInput | PhotosInput): Promise<void> {
+  // 1. Get the content: text, or the stored file(s), each size-checked.
   let text: string | null = null;
-  let visual: { kind: "pdf" | "image"; data: string; mediaType: string } | null = null;
-  let fileId: Id<"_storage"> | undefined;
+  const blocks: Block[] = [];
+  const fileIds: Id<"_storage">[] = [];
   let fileName: string | undefined;
-  let kind: Kind | "text" = "text";
+  let isPhoto = false;
+  const discard = async () => {
+    for (const id of fileIds) await ctx.storage.delete(id);
+  };
+  const load = async (id: Id<"_storage">) => {
+    fileIds.push(id);
+    const blob = await ctx.storage.get(id);
+    return blob && blob.size <= MAX_BYTES ? Buffer.from(await blob.arrayBuffer()) : blob ? "tooBig" : null;
+  };
+
   if ("text" in input) {
     text = input.text;
-  } else {
-    ({ fileId, kind, fileName } = input);
-    const blob = await ctx.storage.get(fileId);
-    if (!blob || blob.size > MAX_BYTES) {
-      await ctx.storage.delete(fileId);
-      return void (await reply(ctx, phone, blob ? REPLY.tooBig : REPLY.unreadable));
+  } else if ("photos" in input) {
+    isPhoto = true;
+    for (const photo of input.photos) {
+      const bytes = await load(photo.fileId);
+      if (!Buffer.isBuffer(bytes)) {
+        await discard();
+        return void (await reply(ctx, phone, bytes === "tooBig" ? REPLY.tooBig : REPLY.photoUnclear));
+      }
+      const media_type = photo.mimeType === "image/png" ? "image/png" : "image/jpeg";
+      blocks.push({ type: "image", source: { type: "base64", media_type, data: bytes.toString("base64") } });
     }
-    const bytes = Buffer.from(await blob.arrayBuffer());
+  } else {
+    fileName = input.fileName;
+    isPhoto = input.kind === "image";
+    const bytes = await load(input.fileId);
+    if (!Buffer.isBuffer(bytes)) {
+      await discard();
+      return void (await reply(ctx, phone, bytes === "tooBig" ? REPLY.tooBig : REPLY.unreadable));
+    }
     try {
-      if (kind === "pdf") visual = { kind, data: bytes.toString("base64"), mediaType: "application/pdf" };
-      else if (kind === "image") visual = { kind, data: bytes.toString("base64"), mediaType: imageType(input) };
-      else if (kind === "docx") text = (await mammoth.extractRawText({ buffer: bytes })).value;
-      else text = bytes.toString("utf8");
+      if (input.kind === "pdf") {
+        blocks.push({ type: "document", source: { type: "base64", media_type: "application/pdf", data: bytes.toString("base64") } });
+      } else if (input.kind === "image") {
+        blocks.push({ type: "image", source: { type: "base64", media_type: imageType(input), data: bytes.toString("base64") } });
+      } else if (input.kind === "docx") {
+        text = (await mammoth.extractRawText({ buffer: bytes })).value;
+      } else if (input.kind === "doc") {
+        text = (await new WordExtractor().extract(bytes)).getBody();
+      } else {
+        text = bytes.toString("utf8");
+      }
     } catch (e) {
-      console.warn(`[resume] couldn't read ${kind} from ${phone}: ${String(e)}`);
+      console.warn(`[resume] couldn't read ${input.kind} from ${phone}: ${String(e)}`);
     }
   }
-  const unreadable = kind === "image" ? REPLY.photoUnclear : REPLY.unreadable;
-  const discard = async () => {
-    if (fileId) await ctx.storage.delete(fileId);
-  };
-  if (!visual && !text?.trim()) {
+  const unreadable = isPhoto ? REPLY.photoUnclear : REPLY.unreadable;
+  if (!blocks.length && !text?.trim()) {
     await discard();
     return void (await reply(ctx, phone, unreadable));
   }
   text = text?.slice(0, MAX_RESUME_CHARS) ?? null;
 
-  // 2. Ask Claude: is it a resume, and a one-line summary (plus the text, for PDFs and photos).
+  // 2. Ask Claude: is it a resume, a one-line summary and details (plus the text, for PDFs and photos).
   const { ok } = await rateLimiter.limit(ctx, "claudeCalls");
   if (!ok) {
     await discard();
     return void (await reply(ctx, phone, REPLY.busy));
   }
+  const label =
+    blocks[0]?.type === "document" ? "This is a PDF."
+    : blocks.length > 1 ? `These are ${blocks.length} photos of one document, in page order.`
+    : "This is a photo.";
   let check: z.infer<typeof ResumeCheck> | null = null;
   try {
     const response = await new Anthropic().messages.parse({
@@ -206,24 +278,7 @@ async function readAndSave(ctx: ActionCtx, phone: string, input: { text: string 
       messages: [
         {
           role: "user",
-          content: visual
-            ? [
-                visual.kind === "pdf"
-                  ? {
-                      type: "document" as const,
-                      source: { type: "base64" as const, media_type: "application/pdf" as const, data: visual.data },
-                    }
-                  : {
-                      type: "image" as const,
-                      source: {
-                        type: "base64" as const,
-                        media_type: visual.mediaType as "image/jpeg" | "image/png",
-                        data: visual.data,
-                      },
-                    },
-                { type: "text" as const, text: visual.kind === "pdf" ? "This is a PDF." : "This is a photo." },
-              ]
-            : `<document>\n${text}\n</document>`,
+          content: blocks.length ? [...blocks, { type: "text" as const, text: label }] : `<document>\n${text}\n</document>`,
         },
       ],
     });
@@ -242,7 +297,7 @@ async function readAndSave(ctx: ActionCtx, phone: string, input: { text: string 
     await discard();
     return void (await reply(ctx, phone, unreadable));
   }
-  const resumeText = visual ? check.resumeText : text;
+  const resumeText = blocks.length ? check.resumeText : text;
   if (!check.isResume || !check.summary || !resumeText?.trim()) {
     await discard();
     return void (await reply(ctx, phone, check.isResume ? unreadable : REPLY.notResume));
@@ -251,11 +306,14 @@ async function readAndSave(ctx: ActionCtx, phone: string, input: { text: string 
     phone,
     resumeText: resumeText.slice(0, MAX_RESUME_CHARS),
     resumeSummary: check.summary,
-    resumeFileId: fileId,
+    resumeFileId: fileIds[0],
+    resumeExtraFileIds: fileIds.length > 1 ? fileIds.slice(1) : undefined,
     resumeFileName: fileName,
     currentRole: check.role ?? undefined,
     currentIndustry: check.industry ?? undefined,
     currentLocation: check.location ?? undefined,
+    contactEmail: check.email ?? undefined,
+    linkedinUrl: check.linkedinUrl ?? undefined,
   });
   await reply(ctx, phone, REPLY.saved(check.summary.replace(/\.$/, ""), firstQuestion));
 }
@@ -386,7 +444,7 @@ function kindOf(mimeType?: string, fileName?: string): Kind | null {
   return (ext && EXTENSIONS[ext]) || null;
 }
 
-function imageType({ mimeType, fileName }: FileInput): string {
+function imageType({ mimeType, fileName }: { mimeType?: string; fileName?: string }): "image/jpeg" | "image/png" {
   if (mimeType === "image/jpeg" || mimeType === "image/png") return mimeType;
   return IMAGE_TYPES[fileName?.split(".").pop()?.toLowerCase() ?? ""] ?? "image/jpeg";
 }

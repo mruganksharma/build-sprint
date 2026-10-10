@@ -14,6 +14,8 @@ const seed = (phone) =>
     phone,
     search: '"Senior Product Manager" in Bengaluru (test)',
     summary: "test",
+    shown: ["9000000001"],
+    matchKey: "test",
     jobs: [
       { jobId: "9000000001", title: "Senior Product Manager", company: "Example Cloud", location: "Bengaluru", postedOn: "2026-10-08", url: "https://www.linkedin.com/jobs/view/9000000001", outcome: "shown", fit: "strong", reason: "Billing and pricing SaaS experience matches." },
       { jobId: "9000000002", title: "Product Manager, Lending", company: "Sample Bank", location: "Bengaluru", postedOn: "2026-10-08", url: "https://www.linkedin.com/jobs/view/9000000002", outcome: "broke_preference", fit: "not_a_fit", reason: "Bank lending product.", brokenPreference: "avoid banks: this is a bank" },
@@ -29,6 +31,8 @@ async function readyUser() {
   await waitForReplies(phone, 2);
   await sendText(phone, "1");
   await waitForReplies(phone, 3);
+  await sendText(phone, "2");
+  await waitForReplies(phone, 4);
   seed(phone);
   return phone;
 }
@@ -40,8 +44,8 @@ async function step(phone, n, text) {
 const cases = [
   async () => {
     const phone = await readyUser();
-    const a = await step(phone, 4, "Why didn't you show me more like this? https://www.linkedin.com/jobs/view/9000000001");
-    const b = await step(phone, 5, "1");
+    const a = await step(phone, 5, "Why didn't you show me more like this? https://www.linkedin.com/jobs/view/9000000001");
+    const b = await step(phone, 6, "1");
     const p = run("profile:getByPhone", { phone });
     check("job we showed: says when and why, then 'yes' is saved as a like",
       /^I sent you this one on .*Strong fit\.\nWhy: Billing/.test(a) && /more jobs like this one\?\n1\. Yes/.test(a) && /look out for more/.test(b) &&
@@ -49,16 +53,16 @@ const cases = [
   },
   async () => {
     const phone = await readyUser();
-    const a = await step(phone, 4, "https://in.linkedin.com/jobs/view/product-manager-lending-at-sample-bank-9000000002?trk=abc");
-    const b = await step(phone, 5, "no");
+    const a = await step(phone, 5, "https://in.linkedin.com/jobs/view/product-manager-lending-at-sample-bank-9000000002?trk=abc");
+    const b = await step(phone, 6, "no");
     const p = run("profile:getByPhone", { phone });
     check("job left out for a preference: names the rule, then 'no' is saved as a dislike",
       /outside what you asked for: avoid banks/.test(a) && /fewer jobs like/.test(b) && p.preferences.dislikes?.includes("Product Manager, Lending at Sample Bank"), `${a} → ${b}`);
   },
   async () => {
     const phone = await readyUser();
-    const a = await step(phone, 4, `https://www.linkedin.com/jobs/search/?currentJobId=${liveJobId}&keywords=pm`);
-    const b = await step(phone, 5, "jobs");
+    const a = await step(phone, 5, `https://www.linkedin.com/jobs/search/?currentJobId=${liveJobId}&keywords=pm`);
+    const b = await step(phone, 6, "jobs");
     const p = run("profile:getByPhone", { phone });
     check("job never seen: says so, judges it now, and 'jobs' skips the question",
       /^That job didn't come up in my searches\.\n\nHere's how .+ fits you: (Strong fit|Partial fit|Not a fit)\.\nWhy: /.test(a) && /more jobs like this one/.test(a) &&

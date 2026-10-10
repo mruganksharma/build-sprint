@@ -9,6 +9,8 @@ export const saveSearch = internalMutation({
     phone: v.string(),
     search: v.string(),
     summary: v.string(),
+    shown: v.array(v.string()),
+    matchKey: v.string(),
     jobs: v.array(
       v.object({
         jobId: v.string(),
@@ -26,27 +28,37 @@ export const saveSearch = internalMutation({
     ),
   },
   returns: v.id("searches"),
-  handler: async (ctx, { phone, search, summary, jobs }) => {
-    const searchId = await ctx.db.insert("searches", { phone, search, summary });
+  handler: async (ctx, { phone, search, summary, shown, matchKey, jobs }) => {
+    const searchId = await ctx.db.insert("searches", { phone, search, summary, shown, matchKey });
     for (const job of jobs) {
-      await ctx.db.insert("jobsSeen", { phone, searchId, ...job });
+      await ctx.db.insert("jobsSeen", { phone, searchId, matchKey, ...job });
     }
     return searchId;
   },
 });
 
-// Counts of what we've kept for one user. Run from the terminal:
+// What each search did with its jobs, newest search first. Run from the terminal:
 //   npx convex run history:countsForPhone '{"phone": "15550000001"}'
 export const countsForPhone = internalQuery({
   args: { phone: v.string() },
-  returns: v.object({ searches: v.number(), jobs: v.number(), shown: v.number() }),
+  returns: v.object({
+    searches: v.number(),
+    jobs: v.number(),
+    shown: v.number(),
+    perSearch: v.array(v.record(v.string(), v.number())),
+  }),
   handler: async (ctx, { phone }) => {
-    const searches = await ctx.db.query("searches").withIndex("by_phone", (q) => q.eq("phone", phone)).take(100);
+    const searches = await ctx.db.query("searches").withIndex("by_phone", (q) => q.eq("phone", phone)).order("desc").take(20);
     const jobs = await ctx.db
       .query("jobsSeen")
       .withIndex("by_phone_and_jobId", (q) => q.eq("phone", phone))
       .take(1000);
-    return { searches: searches.length, jobs: jobs.length, shown: jobs.filter((j) => j.outcome === "shown").length };
+    const perSearch = searches.map((search) => {
+      const counts: Record<string, number> = {};
+      for (const job of jobs) if (job.searchId === search._id) counts[job.outcome] = (counts[job.outcome] ?? 0) + 1;
+      return counts;
+    });
+    return { searches: searches.length, jobs: jobs.length, shown: jobs.filter((j) => j.outcome === "shown").length, perSearch };
   },
 });
 
@@ -83,5 +95,41 @@ export const findJob = internalQuery({
       reason: row.reason ?? null,
       brokenPreference: row.brokenPreference ?? null,
     };
+  },
+});
+
+// Jobs Claude already judged for this user recently, with the same resume and hard preferences
+// (matchKey). A new search reuses these instead of asking Claude again.
+export const recentVerdicts = internalQuery({
+  args: { phone: v.string(), matchKey: v.string(), since: v.number() },
+  returns: v.array(
+    v.object({
+      jobId: v.string(),
+      outcome: outcomeValidator,
+      fit: v.union(v.literal("strong"), v.literal("partial"), v.literal("not_a_fit")),
+      reason: v.string(),
+      caveat: v.union(v.string(), v.null()),
+      brokenPreference: v.union(v.string(), v.null()),
+    }),
+  ),
+  handler: async (ctx, { phone, matchKey, since }) => {
+    const rows = await ctx.db
+      .query("jobsSeen")
+      .withIndex("by_phone_and_jobId", (q) => q.eq("phone", phone))
+      .order("desc")
+      .take(500);
+    const latest = new Map<string, (typeof rows)[number]>();
+    for (const row of rows) {
+      if (row._creationTime < since || row.matchKey !== matchKey || !row.fit || !row.reason) continue;
+      if (!latest.has(row.jobId)) latest.set(row.jobId, row);
+    }
+    return [...latest.values()].map((row) => ({
+      jobId: row.jobId,
+      outcome: row.outcome,
+      fit: row.fit!,
+      reason: row.reason!,
+      caveat: row.caveat ?? null,
+      brokenPreference: row.brokenPreference ?? null,
+    }));
   },
 });

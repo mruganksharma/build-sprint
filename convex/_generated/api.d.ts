@@ -14,6 +14,7 @@ import type * as history from "../history.js";
 import type * as http from "../http.js";
 import type * as jobs from "../jobs.js";
 import type * as limits from "../limits.js";
+import type * as photos from "../photos.js";
 import type * as profile from "../profile.js";
 import type * as resume from "../resume.js";
 import type * as whatsapp from "../whatsapp.js";
@@ -31,6 +32,7 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   jobs: typeof jobs;
   limits: typeof limits;
+  photos: typeof photos;
   profile: typeof profile;
   resume: typeof resume;
   whatsapp: typeof whatsapp;

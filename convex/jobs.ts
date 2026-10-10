@@ -1,5 +1,6 @@
 "use node";
 
+import { createHash } from "node:crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { type Infer, v } from "convex/values";
@@ -24,6 +25,8 @@ const MAX_PAGES = 3; // keep requests to LinkedIn low
 const PAUSE_MS = 1500; // wait between LinkedIn requests
 const CLAUDE_CONCURRENCY = 5;
 const MAX_SHOWN = 10; // jobs per WhatsApp reply
+const MAX_CHECKS = 10; // most jobs Claude checks per search (newest first), to keep the hourly limit
+const REUSE_DAYS = 7; // reuse Claude's verdict on a job judged this recently for the same user
 const MAX_MESSAGE_CHARS = 3500; // WhatsApp allows 4096; leave room
 
 // Product roles keep the original title rules: clearly a PM role, and not the wrong level or job.
@@ -162,15 +165,17 @@ const matchValidator = v.object({
 type Match = Infer<typeof matchValidator>;
 
 // What happened to every job LinkedIn returned, so it can be explained later.
-export type Outcome = "too_old" | "wrong_title" | "duplicate" | "unreadable" | "unchecked" | "not_a_fit" | "broke_preference" | "shown";
+export type Outcome = "too_old" | "wrong_title" | "duplicate" | "unreadable" | "unchecked" | "not_a_fit" | "broke_preference" | "shown" | "already_sent" | "not_checked";
+type PriorVerdict = Verdict & { outcome: Outcome };
+type MatchWithId = Match & { jobId: string };
 export type JobRecord = Card & { outcome: Outcome; fit?: Verdict["fit"]; reason?: string; caveat?: string | null; brokenPreference?: string | null };
 
 type SearchResult = {
   search: string;
   summary: string;
-  matches: Match[];
+  matches: MatchWithId[];
   records: JobRecord[];
-  counts: { returned: number; tooOld: number; wrongTitle: number; duplicates: number; notAFit: number; brokePreference: number; unchecked: number };
+  counts: { returned: number; tooOld: number; wrongTitle: number; duplicates: number; notAFit: number; brokePreference: number; unchecked: number; alreadySent: number; notChecked: number };
   days: number;
 };
 
@@ -225,9 +230,9 @@ async function checkFit(ctx: ActionCtx, client: Anthropic, resume: string, card:
 
 async function runSearch(
   ctx: ActionCtx,
-  opts: { resume: string; prefs: Preferences | null; role: string; location: string; days: number },
+  opts: { resume: string; prefs: Preferences | null; role: string; location: string; days: number; prior?: Map<string, PriorVerdict> },
 ): Promise<SearchResult> {
-  const { resume, prefs, role, location, days } = opts;
+  const { resume, prefs, role, location, days, prior = new Map() } = opts;
 
   // One LinkedIn search per wanted industry (e.g. "Senior Product Manager B2B SaaS"), else just the role.
   const queries = prefs?.industries?.length ? prefs.industries.map((industry) => `${role} ${industry}`) : [role];
@@ -273,9 +278,21 @@ async function runSearch(
     else candidates.push(card);
   }
 
-  // 3. Read each remaining job's full description, one at a time.
-  const descriptions = new Map<string, string>();
+  // Jobs Claude judged for this user recently: reuse the verdict. Ones already sent aren't sent again.
+  // Of the rest, Claude checks only the newest few.
+  const fresh: Card[] = [];
   for (const card of candidates) {
+    const before = prior.get(card.jobId);
+    if (!before) fresh.push(card);
+    else records.push({ ...card, ...before, outcome: before.outcome === "shown" || before.outcome === "already_sent" ? "already_sent" : before.outcome });
+  }
+  fresh.sort((a, b) => b.postedOn.localeCompare(a.postedOn));
+  const toCheck = fresh.slice(0, MAX_CHECKS);
+  for (const card of fresh.slice(MAX_CHECKS)) records.push({ ...card, outcome: "not_checked" });
+
+  // 3. Read each job's full description, one at a time.
+  const descriptions = new Map<string, string>();
+  for (const card of toCheck) {
     try {
       descriptions.set(card.jobId, parseDescription(await fetchText(JOB_URL + card.jobId)));
     } catch (e) {
@@ -293,13 +310,13 @@ async function runSearch(
     const verdict = await checkFit(ctx, client, resume, card, jd, preferencesBlock);
     if (verdict) verdicts.set(card.jobId, verdict);
   };
-  for (let i = 0; i < candidates.length; i += CLAUDE_CONCURRENCY) {
-    await Promise.all(candidates.slice(i, i + CLAUDE_CONCURRENCY).map(checkOne));
+  for (let i = 0; i < toCheck.length; i += CLAUDE_CONCURRENCY) {
+    await Promise.all(toCheck.slice(i, i + CLAUDE_CONCURRENCY).map(checkOne));
   }
 
   // 5. Keep strong and partial fits, newest first, strong before partial on the same day.
-  const matches: Match[] = [];
-  for (const card of candidates) {
+  const matches: MatchWithId[] = [];
+  for (const card of toCheck) {
     const verdict = verdicts.get(card.jobId);
     if (!verdict) {
       records.push({ ...card, outcome: descriptions.has(card.jobId) ? "unchecked" : "unreadable" });
@@ -309,6 +326,7 @@ async function runSearch(
     records.push({ ...card, ...verdict, outcome });
     if (outcome !== "shown" || verdict.fit === "not_a_fit") continue;
     matches.push({
+      jobId: card.jobId,
       title: card.title,
       company: card.company,
       location: card.location,
@@ -332,6 +350,8 @@ async function runSearch(
     notAFit: count("not_a_fit"),
     brokePreference: count("broke_preference"),
     unchecked: count("unchecked") + count("unreadable"),
+    alreadySent: count("already_sent"),
+    notChecked: count("not_checked"),
   };
   let summary =
     `LinkedIn returned ${counts.returned} jobs. Dropped: ${counts.tooOld} older than ${days} days, ` +
@@ -339,6 +359,8 @@ async function runSearch(
     (hasRules ? `${counts.brokePreference} broke your preferences, ` : "") +
     `${counts.notAFit} not a real fit` +
     (counts.unchecked ? `, ${counts.unchecked} couldn't be checked` : "") +
+    (counts.alreadySent ? `, ${counts.alreadySent} already sent recently` : "") +
+    (counts.notChecked ? `, ${counts.notChecked} not checked (only the newest ${MAX_CHECKS} are)` : "") +
     `. ${matches.length} left.`;
   if (matches.length === 0) {
     summary += " Nothing matched this time. Try a wider window (days: 14) or tell me another public job site to search.";
@@ -364,13 +386,14 @@ export const findMatches = internalAction({
     if (!resume) {
       throw new Error("No resume saved yet. Run profile:setResume first.");
     }
-    const { search, summary, matches } = await runSearch(ctx, {
+    const { search, summary, matches: found } = await runSearch(ctx, {
       resume,
       prefs: prefs ?? null,
       role: args.keywords ?? prefs?.role ?? "Senior Product Manager",
       location: args.location ?? prefs?.location ?? "Mumbai, Maharashtra, India",
       days: args.days ?? prefs?.days ?? 7,
     });
+    const matches = found.map(({ jobId: _, ...match }) => match);
     return { search, summary, matches };
   },
 });
@@ -412,7 +435,19 @@ function chunk(parts: string[]): string[] {
   return out;
 }
 
-const AFTER_RESULTS = "Reply 'jobs' to search again, or 'change' to update what you're looking for.";
+const daysText = (days: number) => (days === 1 ? "the last 24 hours" : `the last ${days} days`);
+
+const AFTER_RESULTS =
+  "Tell me which ones you like: reply with a job number and yes or no, e.g. '3 no'. Reply 'jobs' to search again, or 'change' to update what you're looking for.";
+const PORTAL_QUESTION =
+  "Is there another job site you'd like me to search? Reply with its name, e.g. Naukri. I can only search LinkedIn today, but I'll note it.";
+
+// Same resume and same hard preferences → Claude's earlier verdicts still hold. Likes and dislikes
+// are left out on purpose: they nudge new checks but don't make old verdicts wrong.
+function matchKey(resume: string, role: string, prefs: Preferences | null): string {
+  const { industries, avoid, mustHaves, location, days } = prefs ?? {};
+  return createHash("sha256").update(JSON.stringify({ resume, role, industries, avoid, mustHaves, location, days })).digest("hex").slice(0, 16);
+}
 
 export const searchForUser = internalAction({
   args: { phone: v.string(), announce: v.boolean() },
@@ -439,17 +474,28 @@ export const searchForUser = internalAction({
       if (announce) {
         await send(ctx, phone, `Searching LinkedIn for ${industries}jobs in ${place}. This takes a couple of minutes.`);
       }
+      const role = profile.role ?? "jobs";
+      const key = matchKey(profile.resumeText, role, prefs);
+      const recent = await ctx.runQuery(internal.history.recentVerdicts, {
+        phone,
+        matchKey: key,
+        since: Date.now() - REUSE_DAYS * 24 * 60 * 60 * 1000,
+      });
       const result = await runSearch(ctx, {
         resume: profile.resumeText,
         prefs,
-        role: profile.role ?? "jobs",
+        role,
         location: linkedinLocation(place),
         days: prefs?.days ?? 7,
+        prior: new Map(recent.map(({ jobId, ...verdict }) => [jobId, verdict])),
       });
+      const shown = result.matches.slice(0, MAX_SHOWN);
       await ctx.runMutation(internal.history.saveSearch, {
         phone,
         search: result.search,
         summary: result.summary,
+        shown: shown.map((job) => job.jobId),
+        matchKey: key,
         jobs: result.records.map((r) => ({
           jobId: r.jobId,
           title: r.title,
@@ -471,24 +517,25 @@ export const searchForUser = internalAction({
           counts.wrongTitle && `${counts.wrongTitle} were a different role`,
           counts.notAFit && `${counts.notAFit} didn't fit your experience`,
           counts.brokePreference && `${counts.brokePreference} were outside what you asked for`,
-          counts.tooOld && `${counts.tooOld} were older than ${days} days`,
+          counts.tooOld && `${counts.tooOld} were older than ${days === 1 ? "24 hours" : `${days} days`}`,
           counts.unchecked && `${counts.unchecked} I couldn't check right now`,
+          counts.alreadySent && `${counts.alreadySent} I've already sent you`,
+          counts.notChecked && `${counts.notChecked} I'll check next time`,
         ].filter(Boolean);
-        await send(
-          ctx,
-          phone,
+        const nothing =
           counts.returned === 0
-            ? `LinkedIn had no ${industries}jobs for your role in ${place} from the last ${days} days. Reply 'change' to try a different industry or city.`
-            : `I checked ${counts.returned} jobs on LinkedIn in ${place} from the last ${days} days, but none fit well` +
-                (why.length ? ` (${why.join(", ")})` : "") +
-                ". Reply 'change' to try a different industry or city, or 'jobs' to try again later.",
-        );
+            ? `LinkedIn had no ${industries}jobs for your role in ${place} from ${daysText(days)}. Reply 'change' to try a different industry or city.`
+            : `I checked ${counts.returned} jobs on LinkedIn in ${place} from ${daysText(days)}, but found nothing new that fits` +
+              (why.length ? ` (${why.join(", ")})` : "") +
+              ". Reply 'change' to try a different industry or city, or 'jobs' to try again later.";
+        const askSite = await ctx.runMutation(internal.chat.askPortal, { phone });
+        await send(ctx, phone, askSite ? `${nothing}\n\n${PORTAL_QUESTION}` : nothing);
         return null;
       }
-      const shown = matches.slice(0, MAX_SHOWN);
       const header =
-        `Found ${matches.length} job${matches.length === 1 ? "" : "s"} for you on LinkedIn, newest first` +
+        `Found ${matches.length} new job${matches.length === 1 ? "" : "s"} for you on LinkedIn, newest first` +
         (matches.length > MAX_SHOWN ? ` (showing the top ${MAX_SHOWN})` : "") +
+        (counts.alreadySent ? `. I've left out ${counts.alreadySent} I sent you before` : "") +
         ":";
       for (const message of chunk([header, ...shown.map((job, i) => formatJob(job, i + 1)), AFTER_RESULTS])) {
         await send(ctx, phone, message);

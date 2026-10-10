@@ -64,6 +64,9 @@ export const saveUserResume = internalMutation({
     resumeSummary: v.string(),
     resumeFileId: v.optional(v.id("_storage")),
     resumeFileName: v.optional(v.string()),
+    resumeExtraFileIds: v.optional(v.array(v.id("_storage"))),
+    contactEmail: v.optional(v.string()),
+    linkedinUrl: v.optional(v.string()),
     currentRole: v.optional(v.string()),
     currentIndustry: v.optional(v.string()),
     currentLocation: v.optional(v.string()),
@@ -79,14 +82,18 @@ export const saveUserResume = internalMutation({
       resumeSummary: args.resumeSummary,
       resumeFileId: args.resumeFileId,
       resumeFileName: args.resumeFileName,
+      resumeExtraFileIds: args.resumeExtraFileIds,
+      contactEmail: args.contactEmail,
+      linkedinUrl: args.linkedinUrl,
       currentRole: args.currentRole,
       currentIndustry: args.currentIndustry,
       currentLocation: args.currentLocation,
       updatedAt: Date.now(),
     };
     if (existing) {
-      if (existing.resumeFileId && existing.resumeFileId !== args.resumeFileId) {
-        await ctx.storage.delete(existing.resumeFileId);
+      const keep = new Set([args.resumeFileId, ...(args.resumeExtraFileIds ?? [])]);
+      for (const old of [existing.resumeFileId, ...(existing.resumeExtraFileIds ?? [])]) {
+        if (old && !keep.has(old)) await ctx.storage.delete(old);
       }
       await ctx.db.patch(existing._id, fields);
       return await startQuestions(ctx, { ...existing, ...fields });
@@ -104,6 +111,10 @@ export const getByPhone = internalQuery({
     v.object({
       resumeSummary: v.union(v.string(), v.null()),
       resumeTextLength: v.number(),
+      resumeText: v.string(),
+      fileCount: v.number(),
+      contactEmail: v.union(v.string(), v.null()),
+      linkedinUrl: v.union(v.string(), v.null()),
       resumeFileName: v.union(v.string(), v.null()),
       hasFile: v.boolean(),
       currentIndustry: v.union(v.string(), v.null()),
@@ -122,6 +133,10 @@ export const getByPhone = internalQuery({
     return {
       resumeSummary: row.resumeSummary ?? null,
       resumeTextLength: row.resumeText.length,
+      resumeText: row.resumeText,
+      fileCount: (row.resumeFileId ? 1 : 0) + (row.resumeExtraFileIds?.length ?? 0),
+      contactEmail: row.contactEmail ?? null,
+      linkedinUrl: row.linkedinUrl ?? null,
       resumeFileName: row.resumeFileName ?? null,
       hasFile: row.resumeFileId !== undefined,
       currentIndustry: row.currentIndustry ?? null,

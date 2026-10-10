@@ -21,6 +21,7 @@
     "@convex-dev/rate-limiter": "^0.4.1",
     "convex": "^1.46.0",
     "mammoth": "^1.13.0",
+    "word-extractor": "^1.0.4",
     "zod": "^4.6.5"
   },
   "devDependencies": {

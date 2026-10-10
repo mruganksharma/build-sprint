@@ -25,7 +25,7 @@ export const finish = () => process.exit(failed ? 1 : 0);
 // A made-up person. Nothing here is real.
 export const RESUME = `PRIYA NAIR
 Senior Product Manager | B2B SaaS | 9 years
-Email: priya.nair@example.com | Bengaluru, India
+Email: priya.nair@example.com | linkedin.com/in/priya-nair-example | Bengaluru, India
 
 EXPERIENCE
 Senior Product Manager, Acme Cloud (2021 - present)
@@ -49,6 +49,16 @@ export function makeFiles() {
   const f = (name) => join(dir, name);
   writeFileSync(f("priya.txt"), RESUME);
   execFileSync("textutil", ["-convert", "docx", f("priya.txt"), "-output", f("priya.docx")]);
+  execFileSync("textutil", ["-convert", "doc", f("priya.txt"), "-output", f("priya.doc")]);
+  // The same resume split in two, as two photos (page 1 and page 2).
+  const lines = RESUME.split("\n");
+  const half = lines.indexOf("EDUCATION");
+  writeFileSync(f("page1.txt"), lines.slice(0, half).join("\n"));
+  writeFileSync(f("page2.txt"), lines.slice(half).join("\n"));
+  for (const page of ["page1", "page2"]) {
+    writeFileSync(f(`${page}.pdf`), execFileSync("cupsfilter", [f(`${page}.txt`)], { stdio: ["ignore", "pipe", "ignore"] }));
+    execFileSync("sips", ["-s", "format", "png", f(`${page}.pdf`), "--out", f(`${page}.png`)], { stdio: "ignore" });
+  }
   writeFileSync(f("priya.pdf"), execFileSync("cupsfilter", [f("priya.txt")], { stdio: ["ignore", "pipe", "ignore"] }));
   writeFileSync(f("priya.html"), `<!doctype html><html><head><title>Priya Nair</title><style>body{font:16px sans-serif}</style></head><body>${RESUME.split("\n").map((l) => `<p>${l.replace(/&/g, "&amp;")}</p>`).join("")}</body></html>`);
   execFileSync("sips", ["-s", "format", "png", f("priya.pdf"), "--out", f("priya.png")], { stdio: "ignore" });
@@ -103,17 +113,31 @@ export async function lastReply(phone) {
   return null;
 }
 
+// Waits until one of the app's replies to a number matches `want` (or 3 minutes pass); returns it,
+// or the newest reply if none matched.
+export async function waitForMatch(phone, want) {
+  let out = [];
+  for (let i = 0; i < 90; i++) {
+    out = run("whatsapp:messagesForPhone", { phone }).filter((m) => m.direction === "out").map((m) => m.text);
+    const hit = out.find((t) => want.test(t));
+    if (hit) return hit;
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  return out.at(-1) ?? null;
+}
+
 // Runs cases in parallel: each sends something from a fresh number, then checks reply and profile.
 export async function runCases(cases) {
   await Promise.all(cases.map(async (c) => {
     c.phone = newPhone();
     await c.send(c.phone);
-    c.got = await lastReply(c.phone);
+    c.got = await waitForMatch(c.phone, c.reply);
     c.profile = run("profile:getByPhone", { phone: c.phone });
   }));
   for (const c of cases) {
     const savedOk = c.saved ? !!c.profile && c.profile.resumeTextLength > 200 && (!c.file || c.profile.hasFile) : !c.profile;
-    check(c.name, savedOk && !!c.got && c.reply.test(c.got), `reply: ${c.got}`);
+    const extraOk = !c.expect || (!!c.profile && c.expect(c.profile, c.phone));
+    check(c.name, savedOk && extraOk && !!c.got && c.reply.test(c.got), `reply: ${c.got}`);
   }
 }
 

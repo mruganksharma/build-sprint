@@ -11,3 +11,4 @@ Last: the data survives closing and reopening.
 To test on a real phone once Meta works: steps 2 and 3 (WhatsApp file and photo downloads, a working Google Drive link).
 Parked (not now):
 - scrapping people linkedin post , recommendation on changes on the tweak on the resume if required. Auto apply, message draft for linkedin connections and cold email draft. Search for global recommendation if required. Search on VC forums. Connecting with users gmail and scrapping emails and draft email
+- Tap buttons for the preference questions (Same/Different, city list, 24h/7d/30d), with numbered text as fallback. Needs Meta's WhatsApp connection unlocked (Hermes sends plain text only). Multi-select needs WhatsApp Flows (extra Meta setup).

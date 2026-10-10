@@ -150,6 +150,24 @@ export const handleIncoming = internalAction({
 
 // Reads a resume file already in Convex storage. handleIncoming uses the same steps after
 // downloading from WhatsApp; the test script calls this directly with made-up resumes.
+// A file that came through the Hermes relay but can't be read: over 1 MB, or empty.
+export const fileTooBig = internalAction({
+  args: { phone: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { phone }) => {
+    await reply(ctx, phone, REPLY.tooBig);
+    return null;
+  },
+});
+export const fileUnreadable = internalAction({
+  args: { phone: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { phone }) => {
+    await reply(ctx, phone, REPLY.unreadable);
+    return null;
+  },
+});
+
 export const ingestFile = internalAction({
   args: {
     phone: v.string(),

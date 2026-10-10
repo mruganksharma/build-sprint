@@ -94,13 +94,32 @@ http.route({
 //   HERMES_RELAY_SECRET     shared secret; the plugin sends it as "Authorization: Bearer <secret>"
 //   HERMES_ALLOWED_PHONES   comma-separated numbers allowed to use the test number, e.g. 9198xxxxxxxx
 
+const MAX_FILE_BYTES = 1024 * 1024; // AGENTS.md: attachments up to 1 MB
+
+function fromBase64(text: string): Uint8Array<ArrayBuffer> | null {
+  try {
+    return Uint8Array.from(atob(text), (c) => c.charCodeAt(0));
+  } catch {
+    return null; // not valid base64
+  }
+}
+
 // Someone allowed sends a message to the test number.
 http.route({
   path: "/hermes/incoming",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
     if (!(await relayAuthorized(request))) return new Response("Forbidden", { status: 403 });
-    let body: { phone?: unknown; messageId?: unknown; type?: unknown; text?: unknown };
+    let body: {
+      phone?: unknown;
+      messageId?: unknown;
+      type?: unknown;
+      text?: unknown;
+      fileName?: unknown;
+      mimeType?: unknown;
+      fileBase64?: unknown; // the file itself, when it's 1 MB or less
+      tooBig?: unknown; // true when the relay didn't send a file because it's over 1 MB
+    };
     try {
       body = await request.json();
     } catch {
@@ -124,11 +143,18 @@ http.route({
       if (type === "text") {
         await ctx.scheduler.runAfter(0, internal.resume.handleIncoming, { phone, type, text });
       } else {
-        // Files and photos come later; for now only pasted text works on the test number.
-        await ctx.scheduler.runAfter(0, internal.whatsapp.sendReply, {
-          to: phone,
-          text: "For now this test number only reads resumes pasted as text. Please paste your resume here as a message.",
-        });
+        // A file or photo: the same checks and reading as one that comes through Meta.
+        const fileName = typeof body.fileName === "string" ? body.fileName.slice(0, 200) : "file";
+        const mimeType = typeof body.mimeType === "string" ? body.mimeType.slice(0, 100) : undefined;
+        const bytes = typeof body.fileBase64 === "string" ? fromBase64(body.fileBase64) : null;
+        if (body.tooBig === true || (bytes && bytes.length > MAX_FILE_BYTES)) {
+          await ctx.scheduler.runAfter(0, internal.resume.fileTooBig, { phone });
+        } else if (!bytes || bytes.length === 0) {
+          await ctx.scheduler.runAfter(0, internal.resume.fileUnreadable, { phone });
+        } else {
+          const fileId = await ctx.storage.store(new Blob([bytes], { type: mimeType }));
+          await ctx.scheduler.runAfter(0, internal.resume.ingestFile, { phone, fileId, fileName, mimeType });
+        }
       }
     }
     return Response.json({ ok: true });

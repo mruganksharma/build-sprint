@@ -16,7 +16,8 @@
     "test:understand": "node scripts/test-understand.mjs",
     "test:thin": "node scripts/test-thin-results.mjs",
     "test:greeting": "node scripts/test-greeting.mjs",
-    "test:sent": "node scripts/test-sent.mjs"
+    "test:sent": "node scripts/test-sent.mjs",
+    "test:hermes-files": "node scripts/test-hermes-files.mjs"
   },
   "keywords": [],
   "author": "",

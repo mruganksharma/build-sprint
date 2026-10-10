@@ -69,10 +69,10 @@ try {
   replies = await repliesFor(1, 3000);
   check("repeat got no second reply", replies.length === 0, JSON.stringify(replies));
 
-  // 3. A file → asked to paste text for now
+  // 3. A file with nothing attached → "couldn't read" (test:hermes-files checks real files)
   res = await post("/hermes/incoming", { phone, messageId: `t3-${phone}`, type: "document" });
   replies = await repliesFor(1, 20000);
-  check("file → 'paste as text' reply", replies.length === 1 && /pasted as text/.test(replies[0]), JSON.stringify(replies));
+  check("file with no contents → 'couldn't read' reply", replies.length === 1 && /couldn't read that file/.test(replies[0]), JSON.stringify(replies));
 
   // 4. Pasted resume → saved, then the industry question
   res = await post("/hermes/incoming", { phone, messageId: `t4-${phone}`, type: "text", text: RESUME });

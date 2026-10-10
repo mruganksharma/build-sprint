@@ -64,6 +64,7 @@ export const saveUserResume = internalMutation({
     resumeSummary: v.string(),
     resumeFileId: v.optional(v.id("_storage")),
     resumeFileName: v.optional(v.string()),
+    currentRole: v.optional(v.string()),
     currentIndustry: v.optional(v.string()),
     currentLocation: v.optional(v.string()),
   },
@@ -78,6 +79,7 @@ export const saveUserResume = internalMutation({
       resumeSummary: args.resumeSummary,
       resumeFileId: args.resumeFileId,
       resumeFileName: args.resumeFileName,
+      currentRole: args.currentRole,
       currentIndustry: args.currentIndustry,
       currentLocation: args.currentLocation,
       updatedAt: Date.now(),
@@ -142,4 +144,62 @@ export const fileUrl = internalQuery({
   args: { fileId: v.id("_storage") },
   returns: v.union(v.string(), v.null()),
   handler: async (ctx, { fileId }) => await ctx.storage.getUrl(fileId),
+});
+
+// What a job search for a WhatsApp user needs.
+export const getForSearch = internalQuery({
+  args: { phone: v.string() },
+  returns: v.union(
+    v.object({
+      resumeText: v.string(),
+      role: v.union(v.string(), v.null()),
+      preferences: v.union(preferencesValidator, v.null()),
+      ready: v.boolean(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, { phone }) => {
+    const row = await ctx.db
+      .query("profile")
+      .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .first();
+    if (!row) return null;
+    return {
+      resumeText: row.resumeText,
+      role: row.preferences?.role ?? row.currentRole ?? null,
+      preferences: row.preferences ?? null,
+      ready: row.stage === "ready",
+    };
+  },
+});
+
+const SEARCH_LOCK_MS = 10 * 60 * 1000; // a search never takes this long; after it, assume it died
+
+// Marks a search as running. Returns false if one is already running for this user.
+export const startSearch = internalMutation({
+  args: { phone: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, { phone }) => {
+    const row = await ctx.db
+      .query("profile")
+      .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .first();
+    if (!row) return false;
+    if (row.searchStartedAt && Date.now() - row.searchStartedAt < SEARCH_LOCK_MS) return false;
+    await ctx.db.patch(row._id, { searchStartedAt: Date.now() });
+    return true;
+  },
+});
+
+export const finishSearch = internalMutation({
+  args: { phone: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { phone }) => {
+    const row = await ctx.db
+      .query("profile")
+      .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .first();
+    if (row) await ctx.db.patch(row._id, { searchStartedAt: undefined });
+    return null;
+  },
 });

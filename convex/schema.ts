@@ -10,6 +10,8 @@ export const preferencesValidator = v.object({
   mustHaves: v.optional(v.array(v.string())), // anything else in plain words, e.g. ["remote or hybrid"]
   location: v.optional(v.string()),
   days: v.optional(v.number()), // how far back to look
+  likes: v.optional(v.array(v.string())), // jobs they said they want more of, e.g. "Senior PM at Okta"
+  dislikes: v.optional(v.array(v.string())), // jobs they said they don't want more of
 });
 
 // Which question a WhatsApp user is answering after sending their resume.
@@ -19,6 +21,19 @@ export const stageValidator = v.union(
   v.literal("location_choice"), // where you are now, or somewhere else?
   v.literal("location_input"), // which city?
   v.literal("ready"), // all answered
+  v.literal("job_feedback"), // "want more jobs like this one?" after explaining a job
+);
+
+// What happened to a job in a search.
+export const outcomeValidator = v.union(
+  v.literal("shown"),
+  v.literal("too_old"),
+  v.literal("wrong_title"),
+  v.literal("duplicate"),
+  v.literal("unreadable"), // couldn't load the job description
+  v.literal("unchecked"), // Claude couldn't check it (hourly limit or error)
+  v.literal("not_a_fit"),
+  v.literal("broke_preference"),
 );
 
 export default defineSchema({
@@ -32,9 +47,13 @@ export default defineSchema({
     resumeFileName: v.optional(v.string()),
     preferences: v.optional(preferencesValidator),
     // WhatsApp users: what the resume says today, and where they are in the questions after it.
+    currentRole: v.optional(v.string()), // job title to search for, from the resume
     currentIndustry: v.optional(v.string()),
     currentLocation: v.optional(v.string()),
     stage: v.optional(stageValidator),
+    searchStartedAt: v.optional(v.number()), // set while a job search runs, so we don't start two
+    pendingJob: v.optional(v.string()), // the job a "want more like this?" answer is about
+
     updatedAt: v.number(),
   }).index("by_phone", ["phone"]),
 
@@ -54,4 +73,28 @@ export default defineSchema({
   })
     .index("by_waMessageId", ["waMessageId"])
     .index("by_phone", ["phone"]),
+
+  // Every job search run for a WhatsApp user.
+  searches: defineTable({
+    phone: v.string(),
+    search: v.string(), // e.g. "Senior Product Manager B2B SaaS" in Pune, last 7 days
+    summary: v.string(), // counts of what was dropped and why
+  }).index("by_phone", ["phone"]),
+
+  // Every job a search looked at, shown or not, with the reason. Lets us explain any job later.
+  jobsSeen: defineTable({
+    phone: v.string(),
+    searchId: v.id("searches"),
+    jobId: v.string(), // LinkedIn's job id
+    title: v.string(),
+    company: v.string(),
+    location: v.string(),
+    postedOn: v.string(),
+    url: v.string(),
+    outcome: outcomeValidator,
+    fit: v.optional(v.union(v.literal("strong"), v.literal("partial"), v.literal("not_a_fit"))),
+    reason: v.optional(v.string()),
+    caveat: v.optional(v.string()),
+    brokenPreference: v.optional(v.string()),
+  }).index("by_phone_and_jobId", ["phone", "jobId"]),
 });

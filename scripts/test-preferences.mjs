@@ -1,4 +1,5 @@
-// Milestone 4 test: after a made-up resume, a made-up user answers the industry and city
+// Milestone 4 test (needs JOB_SEARCH=off on dev, so finishing doesn't start a real search):
+// after a made-up resume, a made-up user answers the industry and city
 // questions in different ways. Runs against the DEV deployment; one Claude call per conversation.
 // Run: npm run test:preferences
 import { RESUME, check, finish, newPhone, run, sendText, waitForReplies } from "./test-helpers.mjs";
@@ -10,7 +11,7 @@ const conversations = [
     steps: [
       [RESUME, /Got your resume[\s\S]*1\. Same/],
       ["1", /You're based in[\s\S]*2\. Somewhere else/],
-      ["1", /^All set\. I'll look for .+ jobs in .+\.$/],
+      ["1", /^All set\. Searching LinkedIn for .+ jobs in .+ now\./],
     ],
     expect: (p) => p.stage === "ready" && p.preferences.industries[0] === p.currentIndustry && p.preferences.location === p.currentLocation,
   },
@@ -21,7 +22,7 @@ const conversations = [
       ["2", /Which industry/],
       ["Fintech, Healthcare", /You're based in/],
       ["2", /Which city[\s\S]*3\. Bengaluru/],
-      ["6", /^All set\. I'll look for Fintech, Healthcare jobs in Pune\.$/],
+      ["6", /^All set\. Searching LinkedIn for Fintech, Healthcare jobs in Pune now\./],
     ],
     expect: (p) => p.stage === "ready" && p.preferences.industries.join("|") === "Fintech|Healthcare" && p.preferences.location === "Pune",
   },
@@ -32,7 +33,7 @@ const conversations = [
       ["Different", /Which industry/],
       ["Edtech", /You're based in/],
       ["somewhere else", /Which city/],
-      ["Jaipur", /^All set\. I'll look for Edtech jobs in Jaipur\.$/],
+      ["Jaipur", /^All set\. Searching LinkedIn for Edtech jobs in Jaipur now\./],
     ],
     expect: (p) => p.preferences.location === "Jaipur" && p.preferences.industries[0] === "Edtech",
   },
@@ -53,7 +54,7 @@ const conversations = [
       [RESUME, /Got your resume/],
       ["1", /You're based in/],
       ["1", /^All set/],
-      ["thanks!", /You're all set\. Send a new resume anytime/],
+      ["thanks!", /^Reply 'jobs' to search for jobs/],
       ["change", /1\. Same/],
     ],
     expect: (p) => p.stage === "industry_choice",

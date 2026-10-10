@@ -9,7 +9,9 @@
     "test:whatsapp": "node scripts/test-whatsapp.mjs",
     "test:resume": "node scripts/test-resume.mjs",
     "test:links": "node scripts/test-links-photos.mjs",
-    "test:preferences": "node scripts/test-preferences.mjs"
+    "test:preferences": "node scripts/test-preferences.mjs",
+    "test:search": "node scripts/test-search.mjs",
+    "test:explain": "node scripts/test-explain.mjs"
   },
   "keywords": [],
   "author": "",

@@ -72,6 +72,7 @@ const ResumeCheck = z.object({
   tooBlurry: z.boolean(),
   isResume: z.boolean(),
   summary: z.string().nullable(),
+  role: z.string().nullable(),
   industry: z.string().nullable(),
   location: z.string().nullable(),
   resumeText: z.string().nullable(),
@@ -82,6 +83,7 @@ const SYSTEM_PROMPT = `You read a document a job seeker sent to a job-finding ap
 tooBlurry: true if it is a photo or PDF where you can't make out most of the words (blurry, tiny, dark, cut off), so you can't tell what it is. Otherwise false.
 isResume: true only if it is a resume or CV of a person.
 summary: if it is a resume, one factual line under 15 words: current role, years of experience, industry. Example: "Senior Product Manager, 11 years, B2B SaaS". No opinions or compliments about the person. Otherwise null.
+role: if it is a resume, the job title to search job boards for: their most recent title in plain words, e.g. "Senior Product Manager", "Data Scientist", "Sales Manager". Null if unclear or not a resume.
 industry: if it is a resume, the industry of their most recent job in 1 to 3 words, e.g. "B2B SaaS", "Fintech", "Healthcare". Null if unclear or not a resume.
 location: if it is a resume and it says where they live, just the city, e.g. "Bengaluru". Otherwise null.
 resumeText: if the document is a PDF or a photo and it is a resume, the full resume as plain text, keeping all content and dropping layout. If it is a resume but you can't read most of the text (blurry, cut off, too small), null. For anything else, null.`;
@@ -251,6 +253,7 @@ async function readAndSave(ctx: ActionCtx, phone: string, input: { text: string 
     resumeSummary: check.summary,
     resumeFileId: fileId,
     resumeFileName: fileName,
+    currentRole: check.role ?? undefined,
     currentIndustry: check.industry ?? undefined,
     currentLocation: check.location ?? undefined,
   });
@@ -293,7 +296,12 @@ function driveDownloadUrl(url: URL): string | null {
 
 async function readLink(ctx: ActionCtx, phone: string, url: URL): Promise<void> {
   const host = url.hostname.toLowerCase();
-  if (host === "linkedin.com" || host.endsWith(".linkedin.com")) return void (await reply(ctx, phone, REPLY.linkedin));
+  if (host === "linkedin.com" || host.endsWith(".linkedin.com")) {
+    // A job link ("why didn't you show me this?") gets explained; a profile link can't be read.
+    const jobId = url.searchParams.get("currentJobId") ?? url.pathname.match(/\/jobs\/view\/(?:[^/]*?-)?(\d{6,})/)?.[1];
+    if (jobId) return void (await ctx.scheduler.runAfter(0, internal.jobs.explainJob, { phone, jobId }));
+    return void (await reply(ctx, phone, REPLY.linkedin));
+  }
   if (!isPublicHost(host)) return void (await reply(ctx, phone, REPLY.linkBroken));
 
   const isDrive = host === "drive.google.com" || host === "docs.google.com";

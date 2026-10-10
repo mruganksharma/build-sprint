@@ -117,6 +117,18 @@ async function quickAnswer(ctx: MutationCtx, row: Doc<"profile">, answer: string
       await addPortals(ctx, row, [answer], { stage: "ready" });
       return portalNoted(answer);
     }
+    case "widen_offer": {
+      // "Want me to look at the last 7 days too? Reply 7." The number, or a plain yes, says go.
+      const next = widerDays(row.preferences?.days ?? 7);
+      await ctx.db.patch(row._id, { stage: "ready", updatedAt: Date.now() });
+      const ready = { ...row, stage: "ready" as const };
+      if (next && (word === String(next) || /^(yes|y|ok|okay|sure|yes please)$/.test(word))) {
+        const preferences = { ...row.preferences, days: next };
+        await ctx.db.patch(row._id, { preferences });
+        return searchNow(ctx, { ...ready, preferences });
+      }
+      return readyAnswer(ctx, ready, word);
+    }
     case "job_feedback": {
       const job = row.pendingJob ?? "";
       const yes = word === "1" || word.startsWith("yes");
@@ -252,6 +264,10 @@ function questionFor(row: Doc<"profile">): string | null {
     case "days_choice": return daysQuestion;
     case "job_feedback": return `Do you want more jobs like ${row.pendingJob ?? "that one"}?`;
     case "portal_input": return "Is there another job site you'd like me to search?";
+    case "widen_offer": {
+      const next = widerDays(row.preferences?.days ?? 7);
+      return next ? `Want me to look at jobs from the last ${next} days too? Reply ${next}.` : null;
+    }
     default: return null;
   }
 }
@@ -346,7 +362,7 @@ export const askJobFeedback = internalMutation({
       .query("profile")
       .withIndex("by_phone", (q) => q.eq("phone", phone))
       .first();
-    if (!row || (row.stage !== "ready" && row.stage !== "job_feedback")) return false;
+    if (!row || (row.stage !== "ready" && row.stage !== "job_feedback" && row.stage !== "widen_offer")) return false;
     await ctx.db.patch(row._id, { stage: "job_feedback", pendingJob: job, updatedAt: Date.now() });
     return true;
   },
@@ -433,6 +449,23 @@ async function addPortals(ctx: MutationCtx, row: Doc<"profile">, sites: string[]
   const portals = dedupe([...(row.preferences?.portals ?? []), ...sites]).slice(-MAX_FEEDBACK);
   await ctx.db.patch(row._id, { ...extra, preferences: { ...row.preferences, portals }, updatedAt: Date.now() });
 }
+
+const widerDays = (days: number) => (days < 7 ? 7 : days < 30 ? 30 : null);
+
+// Called when few jobs fit: the next short reply may be the number of days to look back.
+export const offerWiderSearch = internalMutation({
+  args: { phone: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, { phone }) => {
+    const row = await ctx.db
+      .query("profile")
+      .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .first();
+    if (!row || row.stage !== "ready") return false;
+    await ctx.db.patch(row._id, { stage: "widen_offer", updatedAt: Date.now() });
+    return true;
+  },
+});
 
 // Called when a search found nothing that fits: ask which other job site they'd like.
 export const askPortal = internalMutation({

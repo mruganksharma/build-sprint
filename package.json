@@ -13,7 +13,8 @@
     "test:search": "node scripts/test-search.mjs",
     "test:explain": "node scripts/test-explain.mjs",
     "test:hermes": "node scripts/test-hermes-relay.mjs",
-    "test:understand": "node scripts/test-understand.mjs"
+    "test:understand": "node scripts/test-understand.mjs",
+    "test:thin": "node scripts/test-thin-results.mjs"
   },
   "keywords": [],
   "author": "",

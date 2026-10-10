@@ -25,6 +25,7 @@ export const stageValidator = v.union(
   v.literal("ready"), // all answered
   v.literal("job_feedback"), // "want more jobs like this one?" after explaining a job
   v.literal("portal_input"), // "which other job site should I search?" after nothing fit
+  v.literal("widen_offer"), // "want me to look at the last 7 days too?" after few jobs fit
 );
 
 // What happened to a job in a search.

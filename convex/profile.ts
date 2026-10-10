@@ -184,7 +184,8 @@ export const getForSearch = internalQuery({
       resumeText: row.resumeText,
       role: row.preferences?.role ?? row.currentRole ?? null,
       preferences: row.preferences ?? null,
-      ready: row.stage === "ready",
+      // Finished the questions after the resume (a follow-up question may be open).
+      ready: ["ready", "job_feedback", "portal_input", "widen_offer"].includes(row.stage ?? ""),
     };
   },
 });

@@ -170,10 +170,12 @@ type PriorVerdict = Verdict & { outcome: Outcome };
 type MatchWithId = Match & { jobId: string };
 export type JobRecord = Card & { outcome: Outcome; fit?: Verdict["fit"]; reason?: string; caveat?: string | null; brokenPreference?: string | null };
 
+type NearMiss = { title: string; company: string; postedOn: string; url: string; brokenPreference: string };
 type SearchResult = {
   search: string;
   summary: string;
   matches: MatchWithId[];
+  nearMisses: NearMiss[]; // checked this time, fit the resume's level but broke one of their rules
   records: JobRecord[];
   counts: { returned: number; tooOld: number; wrongTitle: number; duplicates: number; notAFit: number; brokePreference: number; unchecked: number; alreadySent: number; notChecked: number };
   days: number;
@@ -316,6 +318,7 @@ async function runSearch(
 
   // 5. Keep strong and partial fits, newest first, strong before partial on the same day.
   const matches: MatchWithId[] = [];
+  const nearMisses: NearMiss[] = [];
   for (const card of toCheck) {
     const verdict = verdicts.get(card.jobId);
     if (!verdict) {
@@ -324,6 +327,10 @@ async function runSearch(
     }
     const outcome: Outcome = verdict.brokenPreference ? "broke_preference" : verdict.fit === "not_a_fit" ? "not_a_fit" : "shown";
     records.push({ ...card, ...verdict, outcome });
+    if (outcome === "broke_preference") {
+      const { title, company, postedOn, url } = card;
+      nearMisses.push({ title, company, postedOn, url, brokenPreference: verdict.brokenPreference ?? "" });
+    }
     if (outcome !== "shown" || verdict.fit === "not_a_fit") continue;
     matches.push({
       jobId: card.jobId,
@@ -365,7 +372,8 @@ async function runSearch(
   if (matches.length === 0) {
     summary += " Nothing matched this time. Try a wider window (days: 14) or tell me another public job site to search.";
   }
-  return { search, summary, matches, records, counts, days };
+  nearMisses.sort((a, b) => b.postedOn.localeCompare(a.postedOn));
+  return { search, summary, matches, nearMisses, records, counts, days };
 }
 
 // Milestone 1: the owner's own search, run from the terminal.
@@ -511,41 +519,111 @@ export const searchForUser = internalAction({
         })),
       });
 
-      const { matches, counts, days } = result;
-      if (matches.length === 0) {
-        const why = [
-          counts.wrongTitle && `${counts.wrongTitle} were a different role`,
-          counts.notAFit && `${counts.notAFit} didn't fit your experience`,
-          counts.brokePreference && `${counts.brokePreference} were outside what you asked for`,
-          counts.tooOld && `${counts.tooOld} were older than ${days === 1 ? "24 hours" : `${days} days`}`,
-          counts.unchecked && `${counts.unchecked} I couldn't check right now`,
-          counts.alreadySent && `${counts.alreadySent} I've already sent you`,
-          counts.notChecked && `${counts.notChecked} I'll check next time`,
-        ].filter(Boolean);
-        const nothing =
-          counts.returned === 0
-            ? `LinkedIn had no ${industries}jobs for your role in ${place} from ${daysText(days)}. Reply 'change' to try a different industry or city.`
-            : `I checked ${counts.returned} jobs on LinkedIn in ${place} from ${daysText(days)}, but found nothing new that fits` +
-              (why.length ? ` (${why.join(", ")})` : "") +
-              ". Reply 'change' to try a different industry or city, or 'jobs' to try again later.";
-        const askSite = await ctx.runMutation(internal.chat.askPortal, { phone });
-        await send(ctx, phone, askSite ? `${nothing}\n\n${PORTAL_QUESTION}` : nothing);
-        return null;
-      }
-      const header =
-        `Found ${matches.length} new job${matches.length === 1 ? "" : "s"} for you on LinkedIn, newest first` +
-        (matches.length > MAX_SHOWN ? ` (showing the top ${MAX_SHOWN})` : "") +
-        (counts.alreadySent ? `. I've left out ${counts.alreadySent} I sent you before` : "") +
-        ":";
-      for (const message of chunk([header, ...shown.map((job, i) => formatJob(job, i + 1)), AFTER_RESULTS])) {
-        await send(ctx, phone, message);
-      }
+      await sendResults(ctx, phone, { ...result, place, industries });
     } catch (e) {
       console.warn(`[jobs] search failed for ${phone}: ${String(e)}`);
       await send(ctx, phone, "I couldn't reach LinkedIn right now. Reply 'jobs' in a few minutes to try again.");
     } finally {
       await ctx.runMutation(internal.profile.finishSearch, { phone });
     }
+    return null;
+  },
+});
+
+// Few results feel like the app didn't try. So when fewer than THIN jobs fit, also list the jobs
+// that were close (they missed one of the user's rules, with which one), and offer to look further
+// back in time. The user decides; the rules don't change by themselves.
+const THIN = 3;
+const MAX_NEAR_MISSES = 3;
+const widerDays = (days: number) => (days < 7 ? 7 : days < 30 ? 30 : null);
+
+async function sendResults(
+  ctx: ActionCtx,
+  phone: string,
+  result: Pick<SearchResult, "matches" | "nearMisses" | "counts" | "days"> & { place: string; industries: string },
+) {
+  const { matches, nearMisses, counts, days, place, industries } = result;
+  const shown = matches.slice(0, MAX_SHOWN);
+  const thin = matches.length < THIN;
+  const next = thin ? widerDays(days) : null;
+  const close = thin ? nearMisses.slice(0, MAX_NEAR_MISSES) : [];
+
+  if (matches.length === 0) {
+    const why = [
+      counts.wrongTitle && `${counts.wrongTitle} were a different role`,
+      counts.notAFit && `${counts.notAFit} didn't fit your experience`,
+      counts.brokePreference && `${counts.brokePreference} were outside what you asked for`,
+      counts.tooOld && `${counts.tooOld} were older than ${days === 1 ? "24 hours" : `${days} days`}`,
+      counts.unchecked && `${counts.unchecked} I couldn't check right now`,
+      counts.alreadySent && `${counts.alreadySent} I've already sent you`,
+      counts.notChecked && `${counts.notChecked} I'll check next time`,
+    ].filter(Boolean);
+    const nothing =
+      counts.returned === 0
+        ? `LinkedIn had no ${industries}jobs for your role in ${place} from ${daysText(days)}.`
+        : `I checked ${counts.returned} jobs on LinkedIn in ${place} from ${daysText(days)}, but found nothing new that fits everything you asked for` +
+          (why.length ? ` (${why.join(", ")})` : "") +
+          ".";
+    // One follow-up question at a time: look further back if we can, else ask about other job sites.
+    if (next && (await ctx.runMutation(internal.chat.offerWiderSearch, { phone }))) {
+      await send(ctx, phone, [nothing, nearMissText(close), widerOffer(0, days, next)].filter(Boolean).join("\n\n"));
+      return;
+    }
+    const askSite = await ctx.runMutation(internal.chat.askPortal, { phone });
+    const tail = `Reply 'change' to try a different industry or city, or 'jobs' to try again later.`;
+    await send(ctx, phone, [nothing, nearMissText(close), askSite ? `${tail}\n\n${PORTAL_QUESTION}` : tail].filter(Boolean).join("\n\n"));
+    return;
+  }
+
+  const header =
+    `Found ${matches.length} new job${matches.length === 1 ? "" : "s"} for you on LinkedIn, newest first` +
+    (matches.length > MAX_SHOWN ? ` (showing the top ${MAX_SHOWN})` : "") +
+    (counts.alreadySent ? `. I've left out ${counts.alreadySent} I sent you before` : "") +
+    ":";
+  for (const message of chunk([header, ...shown.map((job, i) => formatJob(job, i + 1)), AFTER_RESULTS])) {
+    await send(ctx, phone, message);
+  }
+  // Sent on its own, so it's easy to read and reply to.
+  const offer = next && (await ctx.runMutation(internal.chat.offerWiderSearch, { phone })) ? widerOffer(matches.length, days, next) : null;
+  const extra = [nearMissText(close), offer].filter(Boolean).join("\n\n");
+  if (extra) await send(ctx, phone, extra);
+}
+
+function nearMissText(close: NearMiss[]): string | null {
+  if (!close.length) return null;
+  const lines = close.map((job) => `• ${job.title} – ${job.company} (${job.brokenPreference})\n${shortLink(job.url)}`);
+  return (
+    `${close.length === 1 ? "1 more was" : `${close.length} more were`} close, but missed one of your rules:\n${lines.join("\n")}\n\n` +
+    "Want jobs like these too? Tell me in your own words what to include."
+  );
+}
+
+const widerOffer = (found: number, days: number, next: number) =>
+  `${found ? `Only ${found} new job${found === 1 ? "" : "s"}` : "Nothing new"} from ${daysText(days)}. Want me to look at the last ${next} days too? Reply ${next}.`;
+
+const shortLink = (url: string) => {
+  const jobId = url.match(/(\d{6,})(?:\/?$|\?)/)?.[1];
+  return jobId ? `https://www.linkedin.com/jobs/view/${jobId}` : url;
+};
+
+// Test helper: send the results message for made-up search results, without searching.
+export const sendResultsForTest = internalAction({
+  args: {
+    phone: v.string(),
+    days: v.number(),
+    matches: v.array(v.object({ title: v.string(), company: v.string(), postedOn: v.string(), url: v.string() })),
+    nearMisses: v.array(v.object({ title: v.string(), company: v.string(), postedOn: v.string(), url: v.string(), brokenPreference: v.string() })),
+  },
+  returns: v.null(),
+  handler: async (ctx, { phone, days, matches, nearMisses }) => {
+    await sendResults(ctx, phone, {
+      matches: matches.map((m, i) => ({ ...m, jobId: String(i), location: "Mumbai", fit: "strong" as const, reason: "Test.", caveat: null })),
+      nearMisses,
+      counts: { returned: 20, tooOld: 0, wrongTitle: 5, duplicates: 7, notAFit: 0, brokePreference: nearMisses.length, unchecked: 0, alreadySent: 0, notChecked: 0 },
+      days,
+      place: "Mumbai",
+      industries: "Fintech ",
+    });
     return null;
   },
 });

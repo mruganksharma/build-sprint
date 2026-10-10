@@ -96,6 +96,7 @@ export default defineSchema({
     summary: v.string(), // counts of what was dropped and why
     shown: v.optional(v.array(v.string())), // job ids in the order sent, so "3 no" finds job 3
     matchKey: v.optional(v.string()), // same resume + same hard preferences → earlier verdicts still hold
+    closeShown: v.optional(v.array(v.string())), // close-but-not-quite jobs listed, so each is listed once
   }).index("by_phone", ["phone"]),
 
   // Every job a search looked at, shown or not, with the reason. Lets us explain any job later.

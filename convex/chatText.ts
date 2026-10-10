@@ -24,7 +24,7 @@ export const metroQuestion = `Which city do you want to work in? Reply with a nu
 
 export const DAYS = [1, 7, 30];
 export const daysQuestion = "How recent should the jobs be?\n1. Last 24 hours\n2. Last 7 days\n3. Last 30 days";
-const daysText = (days: number) => (days === 1 ? "the last 24 hours" : `the last ${days} days`);
+export const daysText = (days: number) => (days === 1 ? "the last 24 hours" : `the last ${days} days`);
 
 export const allSet = (industries: string[], location: string, days: number) =>
   `All set. Searching LinkedIn for ${industries.join(", ")} jobs in ${location} from ${daysText(days)} now. This takes a couple of minutes.`;
@@ -51,3 +51,12 @@ export const noAngleBrackets = "Please reply without the < and > characters.";
 
 export const likedReply = "Got it. I'll look out for more jobs like that one.";
 export const dislikedReply = "Got it. I'll show you fewer jobs like that one.";
+
+// Someone the app knows says hi again: remind them where things stand, without asking Claude.
+export const welcomeBack = (industries: string[], location: string, days: number, searching: boolean) =>
+  `Welcome back! I'm looking for ${industries.length ? `${industries.join(", ")} ` : ""}jobs in ${location} from ${daysText(days)}.\n\n` +
+  (searching
+    ? "I'm searching right now. Your jobs will arrive here in a minute or two."
+    : "Reply 'jobs' for new jobs, or tell me what to change, like a different city or industry.");
+
+export const welcomeBackMidQuestion = (question: string) => `Welcome back! Let's pick up where we left off.\n\n${question}`;

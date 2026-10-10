@@ -13,6 +13,8 @@ import {
   metroQuestion,
   noAngleBrackets,
   savedForNext,
+  welcomeBack,
+  welcomeBackMidQuestion,
   searchQueuedText,
   DAYS,
   daysQuestion,
@@ -50,12 +52,23 @@ export const handleAnswer = internalMutation({
     const answer = text.trim();
     const word = answer.toLowerCase();
     if (/[<>]/.test(answer)) return { reply: noAngleBrackets };
-    const reply = await quickAnswer(ctx, row, answer, word);
+    const reply = isGreeting(word) ? greet(row) : await quickAnswer(ctx, row, answer, word);
     // Never send the same fixed message twice in a row: let Claude answer what they actually said.
     if (reply !== null && reply === (await lastSent(ctx, phone))) return { reply: null };
     return { reply };
   },
 });
+
+// "hi", "Hello!", "hey there", "good morning": a greeting, not an answer to anything.
+const isGreeting = (word: string) =>
+  /^(hi+|hey+|hello+|helo|hola|namaste|yo|good (morning|afternoon|evening))( there| again)?[\s!.,]*$/.test(word);
+
+function greet(row: Doc<"profile">): string {
+  const question = row.stage && SETUP_STAGES.includes(row.stage) ? questionFor(row) : null;
+  if (question) return welcomeBackMidQuestion(question);
+  const prefs = row.preferences ?? {};
+  return welcomeBack(prefs.industries ?? [], prefs.location ?? "India", prefs.days ?? 7, isSearching(row));
+}
 
 const SHORT_WORDS = 3; // longer messages say more than a plain answer, so Claude reads them
 const isShort = (answer: string) => answer.split(/\s+/).length <= SHORT_WORDS;
@@ -461,7 +474,7 @@ export const offerWiderSearch = internalMutation({
       .query("profile")
       .withIndex("by_phone", (q) => q.eq("phone", phone))
       .first();
-    if (!row || row.stage !== "ready") return false;
+    if (!row || (row.stage !== "ready" && row.stage !== "widen_offer")) return false; // an open offer is made again
     await ctx.db.patch(row._id, { stage: "widen_offer", updatedAt: Date.now() });
     return true;
   },
@@ -476,7 +489,7 @@ export const askPortal = internalMutation({
       .query("profile")
       .withIndex("by_phone", (q) => q.eq("phone", phone))
       .first();
-    if (!row || row.stage !== "ready") return false;
+    if (!row || (row.stage !== "ready" && row.stage !== "portal_input")) return false;
     await ctx.db.patch(row._id, { stage: "portal_input", updatedAt: Date.now() });
     return true;
   },

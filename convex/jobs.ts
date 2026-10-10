@@ -26,6 +26,8 @@ const PAUSE_MS = 1500; // wait between LinkedIn requests
 const CLAUDE_CONCURRENCY = 5;
 const MAX_SHOWN = 10; // jobs per WhatsApp reply
 const MAX_CHECKS = 10; // most jobs Claude checks per search (newest first), to keep the hourly limit
+const SENT_DAYS = 30; // a job sent in this many days is never sent again as new
+const DAY_MS = 24 * 60 * 60 * 1000;
 const REUSE_DAYS = 7; // reuse Claude's verdict on a job judged this recently for the same user
 const MAX_MESSAGE_CHARS = 3500; // WhatsApp allows 4096; leave room
 
@@ -79,10 +81,23 @@ function pick(html: string, re: RegExp): string {
   return m ? decode(m[1]) : "";
 }
 
+// LinkedIn answers 429 ("too many requests") when we search too often. Wait and try again a
+// couple of times; if it still says no, throw LinkedInBusy so the caller can say so honestly.
+const RETRY_WAITS_MS = [5000, 15000];
+class LinkedInBusy extends Error {}
+
 async function fetchText(url: string): Promise<string> {
-  const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
-  if (!res.ok) throw new Error(`LinkedIn returned ${res.status} for ${url}`);
-  return res.text();
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
+    if (res.ok) return res.text();
+    if (res.status === 429 && attempt < RETRY_WAITS_MS.length) {
+      console.warn(`[jobs] LinkedIn said 429; waiting ${RETRY_WAITS_MS[attempt] / 1000}s before trying again`);
+      await sleep(RETRY_WAITS_MS[attempt]);
+      continue;
+    }
+    if (res.status === 429) throw new LinkedInBusy(`LinkedIn returned 429 for ${url}`);
+    throw new Error(`LinkedIn returned ${res.status} for ${url}`);
+  }
 }
 
 function parseCards(html: string): Card[] {
@@ -170,12 +185,13 @@ type PriorVerdict = Verdict & { outcome: Outcome };
 type MatchWithId = Match & { jobId: string };
 export type JobRecord = Card & { outcome: Outcome; fit?: Verdict["fit"]; reason?: string; caveat?: string | null; brokenPreference?: string | null };
 
-type NearMiss = { title: string; company: string; postedOn: string; url: string; brokenPreference: string };
+type NearMiss = { jobId: string; title: string; company: string; postedOn: string; url: string; brokenPreference: string };
 type SearchResult = {
   search: string;
   summary: string;
   matches: MatchWithId[];
   nearMisses: NearMiss[]; // checked this time, fit the resume's level but broke one of their rules
+  skipped: string[]; // industries LinkedIn turned away this time (too many requests)
   records: JobRecord[];
   counts: { returned: number; tooOld: number; wrongTitle: number; duplicates: number; notAFit: number; brokePreference: number; unchecked: number; alreadySent: number; notChecked: number };
   days: number;
@@ -232,11 +248,20 @@ async function checkFit(ctx: ActionCtx, client: Anthropic, resume: string, card:
 
 async function runSearch(
   ctx: ActionCtx,
-  opts: { resume: string; prefs: Preferences | null; role: string; location: string; days: number; prior?: Map<string, PriorVerdict> },
+  opts: {
+    resume: string;
+    prefs: Preferences | null;
+    role: string;
+    location: string;
+    days: number;
+    prior?: Map<string, PriorVerdict>;
+    sent?: Set<string>; // job ids already sent to this user, under any preferences
+  },
 ): Promise<SearchResult> {
-  const { resume, prefs, role, location, days, prior = new Map() } = opts;
+  const { resume, prefs, role, location, days, prior = new Map(), sent = new Set() } = opts;
 
   // One LinkedIn search per wanted industry (e.g. "Senior Product Manager B2B SaaS"), else just the role.
+  const labels = prefs?.industries?.length ? prefs.industries : [role];
   const queries = prefs?.industries?.length ? prefs.industries.map((industry) => `${role} ${industry}`) : [role];
   const pagesPerQuery = Math.max(1, Math.floor(MAX_PAGES / queries.length));
   const search = `${queries.map((q) => `"${q}"`).join(" + ")} in ${location}, last ${days} days`;
@@ -244,8 +269,12 @@ async function runSearch(
   const { hasRules, block: preferencesBlock } = preferenceRules(prefs);
 
   // 1. Fetch job cards from LinkedIn's public search, a few pages at most.
+  // If LinkedIn turns one industry's search away, keep going with the others and say which was
+  // skipped. Only if every one fails does the whole search fail.
   const cards: Card[] = [];
-  for (const query of queries) {
+  const skipped: string[] = [];
+  let lastError: unknown = null;
+  for (const [i, query] of queries.entries()) {
     for (let page = 0; page < pagesPerQuery; page++) {
       const params = new URLSearchParams({
         keywords: query,
@@ -253,13 +282,22 @@ async function runSearch(
         f_TPR: `r${days * 24 * 60 * 60}`,
         start: String(page * PAGE_SIZE),
       });
-      const html = await fetchText(`${SEARCH_URL}?${params}`);
+      let html: string;
+      try {
+        html = await fetchText(`${SEARCH_URL}?${params}`);
+      } catch (e) {
+        console.warn(`[jobs] skipped "${query}": ${String(e)}`);
+        lastError = e;
+        if (page === 0) skipped.push(labels[i]);
+        break;
+      }
       const pageCards = parseCards(html);
       cards.push(...pageCards);
       await sleep(PAUSE_MS);
       if (pageCards.length < PAGE_SIZE) break;
     }
   }
+  if (skipped.length === queries.length) throw lastError;
 
   // 2. Drop old postings, wrong titles, and duplicates (same id, or same title + company).
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -280,13 +318,22 @@ async function runSearch(
     else candidates.push(card);
   }
 
+  const nearMisses: NearMiss[] = [];
   // Jobs Claude judged for this user recently: reuse the verdict. Ones already sent aren't sent again.
   // Of the rest, Claude checks only the newest few.
   const fresh: Card[] = [];
   for (const card of candidates) {
     const before = prior.get(card.jobId);
-    if (!before) fresh.push(card);
-    else records.push({ ...card, ...before, outcome: before.outcome === "shown" || before.outcome === "already_sent" ? "already_sent" : before.outcome });
+    if (!before && sent.has(card.jobId)) records.push({ ...card, outcome: "already_sent" });
+    else if (!before) fresh.push(card);
+    else {
+      records.push({ ...card, ...before, outcome: before.outcome === "shown" || before.outcome === "already_sent" ? "already_sent" : before.outcome });
+      // Judged close-but-not-quite earlier: still worth listing if they haven't seen it yet.
+      if (before.outcome === "broke_preference" && before.brokenPreference) {
+        const { jobId, title, company, postedOn, url } = card;
+        nearMisses.push({ jobId, title, company, postedOn, url, brokenPreference: before.brokenPreference });
+      }
+    }
   }
   fresh.sort((a, b) => b.postedOn.localeCompare(a.postedOn));
   const toCheck = fresh.slice(0, MAX_CHECKS);
@@ -318,7 +365,6 @@ async function runSearch(
 
   // 5. Keep strong and partial fits, newest first, strong before partial on the same day.
   const matches: MatchWithId[] = [];
-  const nearMisses: NearMiss[] = [];
   for (const card of toCheck) {
     const verdict = verdicts.get(card.jobId);
     if (!verdict) {
@@ -328,8 +374,8 @@ async function runSearch(
     const outcome: Outcome = verdict.brokenPreference ? "broke_preference" : verdict.fit === "not_a_fit" ? "not_a_fit" : "shown";
     records.push({ ...card, ...verdict, outcome });
     if (outcome === "broke_preference") {
-      const { title, company, postedOn, url } = card;
-      nearMisses.push({ title, company, postedOn, url, brokenPreference: verdict.brokenPreference ?? "" });
+      const { jobId, title, company, postedOn, url } = card;
+      nearMisses.push({ jobId, title, company, postedOn, url, brokenPreference: verdict.brokenPreference ?? "" });
     }
     if (outcome !== "shown" || verdict.fit === "not_a_fit") continue;
     matches.push({
@@ -373,7 +419,8 @@ async function runSearch(
     summary += " Nothing matched this time. Try a wider window (days: 14) or tell me another public job site to search.";
   }
   nearMisses.sort((a, b) => b.postedOn.localeCompare(a.postedOn));
-  return { search, summary, matches, nearMisses, records, counts, days };
+  if (skipped.length) summary += ` LinkedIn turned away the search for: ${skipped.join(", ")}.`;
+  return { search, summary, matches, nearMisses, records, counts, days, skipped };
 }
 
 // Milestone 1: the owner's own search, run from the terminal.
@@ -489,6 +536,7 @@ export const searchForUser = internalAction({
         matchKey: key,
         since: Date.now() - REUSE_DAYS * 24 * 60 * 60 * 1000,
       });
+      const earlier = await ctx.runQuery(internal.history.sentJobIds, { phone, since: Date.now() - SENT_DAYS * DAY_MS });
       const result = await runSearch(ctx, {
         resume: profile.resumeText,
         prefs,
@@ -496,13 +544,18 @@ export const searchForUser = internalAction({
         location: linkedinLocation(place),
         days: prefs?.days ?? 7,
         prior: new Map(recent.map(({ jobId, ...verdict }) => [jobId, verdict])),
+        sent: new Set(earlier.sent),
       });
       const shown = result.matches.slice(0, MAX_SHOWN);
+      // Close jobs they haven't been shown yet; the ones listed now are remembered for next time.
+      const nearMisses = result.nearMisses.filter((job) => !earlier.listedClose.includes(job.jobId));
+      const closeShown = result.matches.length < THIN ? nearMisses.slice(0, MAX_NEAR_MISSES).map((job) => job.jobId) : [];
       await ctx.runMutation(internal.history.saveSearch, {
         phone,
         search: result.search,
         summary: result.summary,
         shown: shown.map((job) => job.jobId),
+        closeShown,
         matchKey: key,
         jobs: result.records.map((r) => ({
           jobId: r.jobId,
@@ -519,10 +572,16 @@ export const searchForUser = internalAction({
         })),
       });
 
-      await sendResults(ctx, phone, { ...result, place, industries });
+      await sendResults(ctx, phone, { ...result, nearMisses, place, industries });
     } catch (e) {
       console.warn(`[jobs] search failed for ${phone}: ${String(e)}`);
-      await send(ctx, phone, "I couldn't reach LinkedIn right now. Reply 'jobs' in a few minutes to try again.");
+      await send(
+        ctx,
+        phone,
+        e instanceof LinkedInBusy
+          ? "LinkedIn is limiting searches right now. Reply 'jobs' in about 15 minutes and I'll try again."
+          : "Something went wrong while searching LinkedIn. Reply 'jobs' in a few minutes to try again.",
+      );
     } finally {
       await ctx.runMutation(internal.profile.finishSearch, { phone });
     }
@@ -540,9 +599,12 @@ const widerDays = (days: number) => (days < 7 ? 7 : days < 30 ? 30 : null);
 async function sendResults(
   ctx: ActionCtx,
   phone: string,
-  result: Pick<SearchResult, "matches" | "nearMisses" | "counts" | "days"> & { place: string; industries: string },
+  result: Pick<SearchResult, "matches" | "nearMisses" | "counts" | "days" | "skipped"> & { place: string; industries: string },
 ) {
-  const { matches, nearMisses, counts, days, place, industries } = result;
+  const { matches, nearMisses, counts, days, place, industries, skipped } = result;
+  const skippedNote = skipped.length
+    ? `LinkedIn was limiting searches, so I couldn't search ${skipped.join(" and ")} this time. Reply 'jobs' in about 15 minutes to include ${skipped.length === 1 ? "it" : "them"}.`
+    : null;
   const shown = matches.slice(0, MAX_SHOWN);
   const thin = matches.length < THIN;
   const next = thin ? widerDays(days) : null;
@@ -566,12 +628,12 @@ async function sendResults(
           ".";
     // One follow-up question at a time: look further back if we can, else ask about other job sites.
     if (next && (await ctx.runMutation(internal.chat.offerWiderSearch, { phone }))) {
-      await send(ctx, phone, [nothing, nearMissText(close), widerOffer(0, days, next)].filter(Boolean).join("\n\n"));
+      await send(ctx, phone, [nothing, skippedNote, nearMissText(close), widerOffer(0, days, next)].filter(Boolean).join("\n\n"));
       return;
     }
     const askSite = await ctx.runMutation(internal.chat.askPortal, { phone });
     const tail = `Reply 'change' to try a different industry or city, or 'jobs' to try again later.`;
-    await send(ctx, phone, [nothing, nearMissText(close), askSite ? `${tail}\n\n${PORTAL_QUESTION}` : tail].filter(Boolean).join("\n\n"));
+    await send(ctx, phone, [nothing, skippedNote, nearMissText(close), askSite ? `${tail}\n\n${PORTAL_QUESTION}` : tail].filter(Boolean).join("\n\n"));
     return;
   }
 
@@ -580,7 +642,7 @@ async function sendResults(
     (matches.length > MAX_SHOWN ? ` (showing the top ${MAX_SHOWN})` : "") +
     (counts.alreadySent ? `. I've left out ${counts.alreadySent} I sent you before` : "") +
     ":";
-  for (const message of chunk([header, ...shown.map((job, i) => formatJob(job, i + 1)), AFTER_RESULTS])) {
+  for (const message of chunk([header, ...shown.map((job, i) => formatJob(job, i + 1)), AFTER_RESULTS, skippedNote].filter((part): part is string => !!part))) {
     await send(ctx, phone, message);
   }
   // Sent on its own, so it's easy to read and reply to.
@@ -613,12 +675,14 @@ export const sendResultsForTest = internalAction({
     days: v.number(),
     matches: v.array(v.object({ title: v.string(), company: v.string(), postedOn: v.string(), url: v.string() })),
     nearMisses: v.array(v.object({ title: v.string(), company: v.string(), postedOn: v.string(), url: v.string(), brokenPreference: v.string() })),
+    skipped: v.optional(v.array(v.string())),
   },
   returns: v.null(),
-  handler: async (ctx, { phone, days, matches, nearMisses }) => {
+  handler: async (ctx, { phone, days, matches, nearMisses, skipped }) => {
     await sendResults(ctx, phone, {
       matches: matches.map((m, i) => ({ ...m, jobId: String(i), location: "Mumbai", fit: "strong" as const, reason: "Test.", caveat: null })),
-      nearMisses,
+      nearMisses: nearMisses.map((job, i) => ({ ...job, jobId: `close${i}` })),
+      skipped: skipped ?? [],
       counts: { returned: 20, tooOld: 0, wrongTitle: 5, duplicates: 7, notAFit: 0, brokePreference: nearMisses.length, unchecked: 0, alreadySent: 0, notChecked: 0 },
       days,
       place: "Mumbai",

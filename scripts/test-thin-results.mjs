@@ -12,9 +12,9 @@ const NEAR = [near(11, "industry must be Fintech: this is a bank"), near(12, "in
 const outgoing = (phone) => run("whatsapp:messagesForPhone", { phone }).filter((m) => m.direction === "out").map((m) => m.text);
 const profile = (phone) => run("profile:getByPhone", { phone });
 // Sends made-up results; returns the new messages the app sent.
-async function results(phone, days, matches, nearMisses, expectMessages) {
+async function results(phone, days, matches, nearMisses, expectMessages, skipped = []) {
   const before = outgoing(phone).length;
-  run("jobs:sendResultsForTest", { phone, days, matches, nearMisses });
+  run("jobs:sendResultsForTest", { phone, days, matches, nearMisses, skipped });
   await waitForReplies(phone, before + expectMessages);
   return outgoing(phone).slice(before);
 }
@@ -57,6 +57,10 @@ try {
   msgs = await results(a, 30, [1, 2, 3, 4, 5].map(job), NEAR, 1);
   check("5 jobs fit: no close-jobs list, no offer", msgs.length === 1 && !/close, but/.test(msgs.join()) && profile(a).stage === "ready", msgs.join(" || "));
 
+  msgs = await results(a, 30, [1, 2, 3, 4, 5].map(job), [], 1, ["Fintech"]);
+  check("LinkedIn turned one industry away: jobs still sent, and says which was skipped",
+    /Product Manager 1/.test(msgs.join()) && /LinkedIn was limiting searches, so I couldn't search Fintech this time\. Reply 'jobs' in about 15 minutes to include it\./.test(msgs.at(-1)), msgs.at(-1));
+
   // User 2 asked for the last 24 hours.
   const b = await readyUser("1");
   msgs = await results(b, 1, [], NEAR, 1);
@@ -65,6 +69,8 @@ try {
   reply = await say(b, "jobs");
   check("'jobs' instead: searches as before, days unchanged", profile(b).preferences.days === 1 && profile(b).stage === "ready" && /^Searching LinkedIn/.test(reply), reply);
   await results(b, 1, [], [], 1);
+  msgs = await results(b, 1, [], [], 1);
+  check("a second thin search in a row offers again", /Reply 7\./.test(msgs[0]) && profile(b).stage === "widen_offer", msgs[0]);
   reply = await say(b, "yes");
   check("a plain 'yes' to the offer looks back 7 days", profile(b).preferences.days === 7 && /^Searching LinkedIn/.test(reply), reply);
 } finally {

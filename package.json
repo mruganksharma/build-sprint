@@ -14,7 +14,9 @@
     "test:explain": "node scripts/test-explain.mjs",
     "test:hermes": "node scripts/test-hermes-relay.mjs",
     "test:understand": "node scripts/test-understand.mjs",
-    "test:thin": "node scripts/test-thin-results.mjs"
+    "test:thin": "node scripts/test-thin-results.mjs",
+    "test:greeting": "node scripts/test-greeting.mjs",
+    "test:sent": "node scripts/test-sent.mjs"
   },
   "keywords": [],
   "author": "",

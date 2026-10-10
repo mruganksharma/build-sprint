@@ -10,6 +10,7 @@ export const saveSearch = internalMutation({
     search: v.string(),
     summary: v.string(),
     shown: v.array(v.string()),
+    closeShown: v.optional(v.array(v.string())),
     matchKey: v.string(),
     jobs: v.array(
       v.object({
@@ -28,8 +29,8 @@ export const saveSearch = internalMutation({
     ),
   },
   returns: v.id("searches"),
-  handler: async (ctx, { phone, search, summary, shown, matchKey, jobs }) => {
-    const searchId = await ctx.db.insert("searches", { phone, search, summary, shown, matchKey });
+  handler: async (ctx, { phone, search, summary, shown, closeShown, matchKey, jobs }) => {
+    const searchId = await ctx.db.insert("searches", { phone, search, summary, shown, closeShown, matchKey });
     for (const job of jobs) {
       await ctx.db.insert("jobsSeen", { phone, searchId, matchKey, ...job });
     }
@@ -131,5 +132,26 @@ export const recentVerdicts = internalQuery({
       caveat: row.caveat ?? null,
       brokenPreference: row.brokenPreference ?? null,
     }));
+  },
+});
+
+// Jobs we've sent this user since `since`, whatever they were searching for at the time, so a job
+// isn't sent again as "new" after they change what they're looking for. Also the close-but-not-quite
+// jobs we've listed, so those aren't listed twice either.
+export const sentJobIds = internalQuery({
+  args: { phone: v.string(), since: v.number() },
+  returns: v.object({ sent: v.array(v.string()), listedClose: v.array(v.string()) }),
+  handler: async (ctx, { phone, since }) => {
+    const searches = (
+      await ctx.db
+        .query("searches")
+        .withIndex("by_phone", (q) => q.eq("phone", phone))
+        .order("desc")
+        .take(100)
+    ).filter((s) => s._creationTime >= since);
+    return {
+      sent: [...new Set(searches.flatMap((s) => s.shown ?? []))],
+      listedClose: [...new Set(searches.flatMap((s) => s.closeShown ?? []))],
+    };
   },
 });

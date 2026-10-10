@@ -60,6 +60,7 @@ export default defineSchema({
     currentLocation: v.optional(v.string()),
     stage: v.optional(stageValidator),
     searchStartedAt: v.optional(v.number()), // set while a job search runs, so we don't start two
+    searchQueued: v.optional(v.boolean()), // they changed what they want mid-search: search again after
     pendingJob: v.optional(v.string()), // the job a "want more like this?" answer is about
 
     updatedAt: v.number(),
@@ -76,11 +77,16 @@ export default defineSchema({
     fileName: v.optional(v.string()),
     mimeType: v.optional(v.string()),
     status: v.optional(
-      v.union(v.literal("sent"), v.literal("failed"), v.literal("logged_only")), // outgoing only
+      // outgoing only; "queued" = waiting for the Hermes relay to pick it up and send it
+      v.union(v.literal("sent"), v.literal("failed"), v.literal("logged_only"), v.literal("queued")),
     ),
+    // How the message travelled. Unset = Meta's WhatsApp Cloud API; "hermes" = the Hermes relay
+    // on the test number. Replies go back the way the user's latest message came in.
+    channel: v.optional(v.literal("hermes")),
   })
     .index("by_waMessageId", ["waMessageId"])
-    .index("by_phone", ["phone"]),
+    .index("by_phone", ["phone"])
+    .index("by_channel_and_status", ["channel", "status"]),
 
   // Every job search run for a WhatsApp user.
   searches: defineTable({

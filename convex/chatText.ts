@@ -34,8 +34,10 @@ export const searchingAgain = (industries: string[], location: string) =>
 
 export const stillSearching = "I'm still searching. Your jobs will arrive here in a minute or two.";
 
-export const readyHelp =
-  "Reply 'jobs' to search for jobs, 'change' to update what you're looking for, or send a new resume anytime. To rate a job from my last list, reply with its number and yes or no, e.g. '3 no'.";
+export const savedForNext = "I've saved that for your next search. Reply 'jobs' whenever you want me to search.";
+
+export const searchQueuedText =
+  "Your current search is still running. I'll search again with this as soon as it finishes.";
 
 export const portalNoted = (site: string) =>
   `Noted: ${site}. I can only search LinkedIn today, but I've saved it for later. Reply 'jobs' to search LinkedIn again, or 'change' to update what you're looking for.`;
@@ -44,8 +46,6 @@ export const noSuchJob = (n: number) => `There's no job ${n} in my last list. Re
 export const noListYet = "I haven't sent you a list of jobs yet. Reply 'jobs' to search.";
 export const ratedJob = (job: string, yes: boolean) =>
   yes ? `Got it: I'll look out for more jobs like ${job}.` : `Got it: I'll show you fewer jobs like ${job}.`;
-
-export const pleaseChoose = (question: string) => `Please reply 1 or 2.\n\n${question}`;
 
 export const noAngleBrackets = "Please reply without the < and > characters.";
 

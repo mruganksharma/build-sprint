@@ -1,4 +1,5 @@
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { internalMutation, internalQuery } from "./_generated/server";
 import { startQuestions } from "./chat";
@@ -214,7 +215,24 @@ export const finishSearch = internalMutation({
       .query("profile")
       .withIndex("by_phone", (q) => q.eq("phone", phone))
       .first();
-    if (row) await ctx.db.patch(row._id, { searchStartedAt: undefined });
+    if (!row) return null;
+    await ctx.db.patch(row._id, { searchStartedAt: undefined, searchQueued: undefined });
+    // They changed what they're looking for while this search ran: search again with the new answers.
+    if (row.searchQueued) await ctx.scheduler.runAfter(0, internal.jobs.searchForUser, { phone, announce: true });
+    return null;
+  },
+});
+
+// Test helper: pretend a job search is running for a made-up number. Run from the test scripts only.
+export const markSearchingForTest = internalMutation({
+  args: { phone: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { phone }) => {
+    const row = await ctx.db
+      .query("profile")
+      .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .first();
+    if (row) await ctx.db.patch(row._id, { searchStartedAt: Date.now() });
     return null;
   },
 });

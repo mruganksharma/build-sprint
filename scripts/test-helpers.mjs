@@ -8,6 +8,15 @@ import { join } from "node:path";
 export const site = readFileSync(".env.local", "utf8").match(/^CONVEX_SITE_URL=(.+)$/m)?.[1].trim();
 const appSecret = execSync("npx convex env get WHATSAPP_APP_SECRET").toString().trim();
 
+// Replies to the made-up test numbers are saved but never really sent on WhatsApp. On for the
+// run, off again at the end (also if the run is stopped with Ctrl+C).
+execSync("npx convex env set WHATSAPP_SEND off", { stdio: "ignore" });
+const sendingBackOn = () => execSync("npx convex env remove WHATSAPP_SEND", { stdio: "ignore" });
+process.on("SIGINT", () => {
+  sendingBackOn();
+  process.exit(130);
+});
+
 export const run = (fn, args) =>
   JSON.parse(execFileSync("npx", ["convex", "run", fn, JSON.stringify(args)]).toString() || "null");
 
@@ -20,7 +29,10 @@ export const check = (name, ok, detail = "") => {
   console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  (${detail})` : ""}`);
   if (!ok) failed++;
 };
-export const finish = () => process.exit(failed ? 1 : 0);
+export const finish = () => {
+  sendingBackOn();
+  process.exit(failed ? 1 : 0);
+};
 
 // A made-up person. Nothing here is real.
 export const RESUME = `PRIYA NAIR

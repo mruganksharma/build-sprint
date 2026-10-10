@@ -15,8 +15,10 @@ import type * as http from "../http.js";
 import type * as jobs from "../jobs.js";
 import type * as limits from "../limits.js";
 import type * as photos from "../photos.js";
+import type * as privacy from "../privacy.js";
 import type * as profile from "../profile.js";
 import type * as resume from "../resume.js";
+import type * as understand from "../understand.js";
 import type * as whatsapp from "../whatsapp.js";
 
 import type {
@@ -33,8 +35,10 @@ declare const fullApi: ApiFromModules<{
   jobs: typeof jobs;
   limits: typeof limits;
   photos: typeof photos;
+  privacy: typeof privacy;
   profile: typeof profile;
   resume: typeof resume;
+  understand: typeof understand;
   whatsapp: typeof whatsapp;
 }>;
 

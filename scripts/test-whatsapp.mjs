@@ -10,6 +10,8 @@ const env = (name) => execSync(`npx convex env get ${name}`).toString().trim();
 const verifyToken = env("WHATSAPP_VERIFY_TOKEN");
 const appSecret = env("WHATSAPP_APP_SECRET");
 const url = `${site}/whatsapp`;
+// Replies to the made-up numbers are saved but never really sent (switched back on at the end).
+execSync("npx convex env set WHATSAPP_SEND off", { stdio: "ignore" });
 const phone = `1555${Date.now().toString().slice(-7)}`; // made-up number, new each run
 
 let failed = 0;
@@ -39,7 +41,7 @@ const post = (body, secret = appSecret) =>
   });
 
 // 1. Meta's one-time check
-let res = await fetch(`${url}?hub.mode=subscribe&hub.verify_token=${verifyToken}&hub.challenge=12345`);
+let res = await fetch(`${url}?hub.mode=subscribe&hub.verify_token=${encodeURIComponent(verifyToken)}&hub.challenge=12345`);
 check("verify: right token echoes challenge", res.status === 200 && (await res.text()) === "12345");
 res = await fetch(`${url}?hub.mode=subscribe&hub.verify_token=wrong&hub.challenge=12345`);
 check("verify: wrong token refused", res.status === 403, `got ${res.status}`);
@@ -72,4 +74,5 @@ check("1 reply per new message, logged (no Meta token yet)",
 
 console.log(`\nTest number: ${phone}`);
 console.log(JSON.stringify(rows, null, 2));
+execSync("npx convex env remove WHATSAPP_SEND", { stdio: "ignore" });
 process.exit(failed ? 1 : 0);

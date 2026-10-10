@@ -9,6 +9,8 @@ import { internalAction, internalMutation, internalQuery } from "./_generated/se
 //   WHATSAPP_TOKEN          permanent access token, for sending replies
 //   WHATSAPP_PHONE_ID       the business phone number's id, for sending replies
 // Until WHATSAPP_TOKEN and WHATSAPP_PHONE_ID are set, replies are only logged, not sent.
+// Test number via the Hermes relay (see http.ts /hermes/*): replies to users whose latest message
+// came through Hermes are queued here and collected by the relay instead of going to Meta.
 
 const GRAPH_URL = "https://graph.facebook.com/v23.0";
 
@@ -22,6 +24,7 @@ export const saveIncoming = internalMutation({
     mediaId: v.optional(v.string()),
     fileName: v.optional(v.string()),
     mimeType: v.optional(v.string()),
+    channel: v.optional(v.literal("hermes")),
   },
   returns: v.boolean(),
   handler: async (ctx, args) => {
@@ -40,7 +43,8 @@ export const saveOutgoing = internalMutation({
     phone: v.string(),
     text: v.string(),
     waMessageId: v.optional(v.string()),
-    status: v.union(v.literal("sent"), v.literal("failed"), v.literal("logged_only")),
+    status: v.union(v.literal("sent"), v.literal("failed"), v.literal("logged_only"), v.literal("queued")),
+    channel: v.optional(v.literal("hermes")),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -49,13 +53,47 @@ export const saveOutgoing = internalMutation({
   },
 });
 
+// Which way the user's latest message came in, so the reply goes back the same way.
+export const channelFor = internalQuery({
+  args: { phone: v.string() },
+  returns: v.union(v.literal("hermes"), v.literal("meta")),
+  handler: async (ctx, { phone }) => {
+    const latestIn = await ctx.db
+      .query("messages")
+      .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .order("desc")
+      .filter((q) => q.eq(q.field("direction"), "in"))
+      .first();
+    return latestIn?.channel === "hermes" ? "hermes" : "meta";
+  },
+});
+
+// The Hermes relay collects replies waiting for it. Each is handed out once, oldest first.
+export const claimHermesOutbox = internalMutation({
+  args: {},
+  returns: v.array(v.object({ phone: v.string(), text: v.string() })),
+  handler: async (ctx) => {
+    const queued = await ctx.db
+      .query("messages")
+      .withIndex("by_channel_and_status", (q) => q.eq("channel", "hermes").eq("status", "queued"))
+      .take(20);
+    for (const m of queued) await ctx.db.patch(m._id, { status: "sent" });
+    return queued.map((m) => ({ phone: m.phone, text: m.text ?? "" }));
+  },
+});
+
 export const sendReply = internalAction({
   args: { to: v.string(), text: v.string() },
   returns: v.null(),
   handler: async (ctx, { to, text }) => {
+    if ((await ctx.runQuery(internal.whatsapp.channelFor, { phone: to })) === "hermes") {
+      await ctx.runMutation(internal.whatsapp.saveOutgoing, { phone: to, text, status: "queued", channel: "hermes" });
+      return null;
+    }
     const token = process.env.WHATSAPP_TOKEN;
     const phoneId = process.env.WHATSAPP_PHONE_ID;
-    if (!token || !phoneId) {
+    // WHATSAPP_SEND=off: dev-only switch the test scripts set, so made-up test numbers are never texted.
+    if (!token || !phoneId || process.env.WHATSAPP_SEND === "off") {
       console.log(`[whatsapp] no credentials yet; would send to ${to}: ${text}`);
       await ctx.runMutation(internal.whatsapp.saveOutgoing, { phone: to, text, status: "logged_only" });
       return null;

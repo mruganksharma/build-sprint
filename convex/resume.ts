@@ -11,6 +11,7 @@ import type { Id } from "./_generated/dataModel";
 import type { ActionCtx } from "./_generated/server";
 import { internalAction } from "./_generated/server";
 import { rateLimiter } from "./limits";
+import { understandMessage } from "./understand";
 
 // Milestones 2 and 3: a WhatsApp user sends their resume as a PDF, Word file (.docx or old .doc),
 // .txt, pasted text, one or more photos, or a link (website or Google Drive). We check it, read
@@ -121,8 +122,11 @@ export const handleIncoming = internalAction({
       if (link) return void (await readLink(ctx, phone, link));
       if (body.length < MIN_PASTED_CHARS) {
         // A short answer to one of the questions after the resume, or a hello from someone new.
+        // If the app can't handle it on its own (or would repeat itself), Claude reads it.
         const answer = await ctx.runMutation(internal.chat.handleAnswer, { phone, text: body });
-        return void (await reply(ctx, phone, answer ?? REPLY.welcome));
+        let text = answer ? answer.reply : REPLY.welcome;
+        if (!answer && (await ctx.runQuery(internal.chat.lastReply, { phone })) === REPLY.welcome) text = null;
+        return void (await reply(ctx, phone, text ?? (await understandMessage(ctx, phone, body))));
       }
       if (/[<>]/.test(body)) return void (await reply(ctx, phone, REPLY.angleBrackets));
       return void (await readAndSave(ctx, phone, { text: body }));

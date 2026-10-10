@@ -36,16 +36,16 @@ const conversations = [
       ["Edtech", /You're based in/],
       ["somewhere else", /Which city/],
       ["Jaipur", /How recent/],
-      ["soon", /^Please reply 1, 2 or 3\./],
+      ["soon", /\S/], // unclear: Claude answers (test:understand checks how)
       ["last 30 days", /^All set\. Searching LinkedIn for Edtech jobs in Jaipur from the last 30 days now\./],
     ],
     expect: (p) => p.preferences.location === "Jaipur" && p.preferences.industries[0] === "Edtech" && p.preferences.days === 30,
   },
   {
-    name: "unclear answer asks again, stays on the same question",
+    name: "unclear answer gets a reply, stays on the same question",
     steps: [
       [RESUME, /Got your resume/],
-      ["maybe", /^Please reply 1 or 2\.[\s\S]*1\. Same/],
+      ["maybe", /\S/],
       ["2", /Which industry/],
       ["<b>Fintech</b>", /without the < and >/],
       ["Fintech", /You're based in/],
@@ -59,7 +59,7 @@ const conversations = [
       ["1", /You're based in/],
       ["1", /How recent/],
       ["2", /^All set/],
-      ["thanks!", /^Reply 'jobs' to search for jobs/],
+      ["thanks!", /\S/],
       ["3 no", /^I haven't sent you a list of jobs yet/],
       ["change", /1\. Same/],
     ],

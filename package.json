@@ -17,7 +17,9 @@
     "test:thin": "node scripts/test-thin-results.mjs",
     "test:greeting": "node scripts/test-greeting.mjs",
     "test:sent": "node scripts/test-sent.mjs",
-    "test:hermes-files": "node scripts/test-hermes-files.mjs"
+    "test:hermes-files": "node scripts/test-hermes-files.mjs",
+    "dashboard": "node scripts/dashboard.mjs",
+    "test:evals": "node scripts/test-evals.mjs"
   },
   "keywords": [],
   "author": "",

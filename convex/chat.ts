@@ -4,6 +4,7 @@ import type { Doc } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { internalMutation, internalQuery } from "./_generated/server";
 import { preferencesValidator } from "./schema";
+import { recordRating } from "./evals";
 import {
   METROS,
   allSet,
@@ -437,6 +438,7 @@ async function rateFromList(ctx: MutationCtx, row: Doc<"profile">, n: number, ye
   if (!seen) return noSuchJob(n);
   const job = `${seen.title} at ${seen.company}`;
   await saveFeedback(ctx, row, job, yes, {});
+  await recordRating(ctx, last._id, n, yes); // observability: Job Fit comes only from these replies
   return ratedJob(job, yes);
 }
 

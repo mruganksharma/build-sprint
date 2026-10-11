@@ -10,6 +10,9 @@
 
 import type * as chat from "../chat.js";
 import type * as chatText from "../chatText.js";
+import type * as evalScore from "../evalScore.js";
+import type * as evals from "../evals.js";
+import type * as grade from "../grade.js";
 import type * as history from "../history.js";
 import type * as http from "../http.js";
 import type * as jobs from "../jobs.js";
@@ -30,6 +33,9 @@ import type {
 declare const fullApi: ApiFromModules<{
   chat: typeof chat;
   chatText: typeof chatText;
+  evalScore: typeof evalScore;
+  evals: typeof evals;
+  grade: typeof grade;
   history: typeof history;
   http: typeof http;
   jobs: typeof jobs;

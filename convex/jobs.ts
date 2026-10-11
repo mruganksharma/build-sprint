@@ -550,7 +550,7 @@ export const searchForUser = internalAction({
       // Close jobs they haven't been shown yet; the ones listed now are remembered for next time.
       const nearMisses = result.nearMisses.filter((job) => !earlier.listedClose.includes(job.jobId));
       const closeShown = result.matches.length < THIN ? nearMisses.slice(0, MAX_NEAR_MISSES).map((job) => job.jobId) : [];
-      await ctx.runMutation(internal.history.saveSearch, {
+      const searchId = await ctx.runMutation(internal.history.saveSearch, {
         phone,
         search: result.search,
         summary: result.summary,
@@ -572,6 +572,23 @@ export const searchForUser = internalAction({
         })),
       });
 
+      // Observability: Preference and Jobs Found scored by rules; Job Fit waits for their replies.
+      await ctx.runMutation(internal.evals.logSearch, {
+        facts: {
+          phone,
+          searchId,
+          alert: false,
+          search: result.search,
+          role,
+          preferences: prefs,
+          skipped: result.skipped,
+          shown: shown.map((job) => ({
+            jobId: job.jobId, title: job.title, company: job.company, location: job.location, fit: job.fit,
+            brokenPreference: null,
+          })),
+          counts: result.counts,
+        },
+      });
       await sendResults(ctx, phone, { ...result, nearMisses, place, industries });
     } catch (e) {
       console.warn(`[jobs] search failed for ${phone}: ${String(e)}`);

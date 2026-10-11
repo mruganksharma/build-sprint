@@ -67,6 +67,23 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_phone", ["phone"]),
 
+  // Observability: every output of the agent, scored against the rubric (see evals.ts). One row per
+  // resume read (document_read), and per search (preference, jobs_found, job_fit).
+  evals: defineTable({
+    phone: v.string(),
+    lever: v.union(v.literal("document_read"), v.literal("preference"), v.literal("jobs_found"), v.literal("job_fit")),
+    searchId: v.optional(v.id("searches")),
+    input: v.string(), // JSON: what went in
+    output: v.string(), // JSON: what came out
+    score: v.union(v.literal("best"), v.literal("between"), v.literal("worst"), v.literal("pending")),
+    checks: v.array(v.object({ item: v.string(), ok: v.boolean(), note: v.string() })),
+    judgedBy: v.union(v.literal("rules"), v.literal("claude"), v.literal("user_replies")),
+    updatedAt: v.number(),
+  })
+    .index("by_searchId_and_lever", ["searchId", "lever"])
+    .index("by_phone", ["phone"])
+    .index("by_updatedAt", ["updatedAt"]),
+
   // Every WhatsApp message, in and out, one row each. Phone is the user's WhatsApp number.
   messages: defineTable({
     phone: v.string(),

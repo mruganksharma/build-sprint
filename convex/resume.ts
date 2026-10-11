@@ -338,6 +338,22 @@ async function readAndSave(ctx: ActionCtx, phone: string, input: { text: string 
     linkedinUrl: check.linkedinUrl ?? undefined,
   });
   await reply(ctx, phone, REPLY.saved(check.summary.replace(/\.$/, ""), firstQuestion));
+  // Observability: a separate Claude check grades how well the resume was read (after the reply).
+  const kind = "text" in input ? "text" : "photos" in input ? "photos" : input.kind;
+  await ctx.scheduler.runAfter(0, internal.grade.gradeDocument, {
+    phone,
+    kind,
+    fileName,
+    fileIds: blocks.length ? fileIds : [],
+    sourceText: blocks.length ? undefined : (text ?? undefined),
+    extracted: {
+      summary: check.summary,
+      role: check.role,
+      industry: check.industry,
+      location: check.location,
+      resumeText: resumeText.slice(0, MAX_RESUME_CHARS),
+    },
+  });
 }
 
 // ---------- links ----------

@@ -3,9 +3,9 @@
 2. I can submit my resume on WhatsApp: pdf, docx, .txt, or pasted as a text message
 3. I can submit my resume as a website / Google Drive link, or a photo of it
 4. I can give my industry and region preference  (built 10 Oct)
-4a. I get matching jobs sent to me in the WhatsApp chat  <- now
-4b. Every job shown or skipped is saved with its reason; I can ask why a job wasn't shown, and my answers improve future matches
-5. A WhatsApp link I can share with others; clicking it starts a chat with the app
+4a. I get matching jobs sent to me in the WhatsApp chat  (done 11 Oct)
+4b. Every job shown or skipped is saved with its reason; I can ask why a job wasn't shown, and my answers improve future matches  (done 11 Oct)
+5. A WhatsApp link I can share with others; clicking it starts a chat with the app  <- now
 6. WhatsApp  (9 Oct: receiving + replying built early, tested with made-up messages, while Meta says my Facebook account is too new to create a business)
 Last: the data survives closing and reopening.
 To test on a real phone once Meta works: steps 2 and 3 (WhatsApp file and photo downloads, a working Google Drive link).

@@ -48,7 +48,9 @@ try {
   check("1 job fits: offers the last 30 days, and waits for the answer",
     /Only 1 new job from the last 7 days\. Want me to look at the last 30 days too\? Reply 30\./.test(extra) && profile(a).stage === "widen_offer", extra);
   let reply = await say(a, "30");
-  check("replying 30 looks back 30 days and searches", profile(a).preferences.days === 30 && profile(a).stage === "ready" && /^Searching LinkedIn/.test(reply), reply);
+  // Their first reply to a job list also gets the (one-time) daily alerts question.
+  check("replying 30 looks back 30 days and searches", profile(a).preferences.days === 30 && /^Searching LinkedIn/.test(reply) && /every day/.test(reply), reply);
+  await say(a, "4"); // no daily alerts, thanks
 
   msgs = await results(a, 30, [job(2)], NEAR.slice(0, 1), 2);
   extra = msgs.at(-1) ?? "";

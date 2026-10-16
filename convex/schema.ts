@@ -26,6 +26,8 @@ export const stageValidator = v.union(
   v.literal("job_feedback"), // "want more jobs like this one?" after explaining a job
   v.literal("portal_input"), // "which other job site should I search?" after nothing fit
   v.literal("widen_offer"), // "want me to look at the last 7 days too?" after few jobs fit
+  v.literal("alerts_choice"), // "want new jobs every day?" after their first reply to a job list
+  v.literal("alerts_time"), // "what time should I send them?"
 );
 
 // What happened to a job in a search.
@@ -62,10 +64,55 @@ export default defineSchema({
     stage: v.optional(stageValidator),
     searchStartedAt: v.optional(v.number()), // set while a job search runs, so we don't start two
     searchQueued: v.optional(v.boolean()), // they changed what they want mid-search: search again after
+    // Daily job alerts: the hour (0-23, India time) to search and send new jobs. Not set = off.
+    alertHour: v.optional(v.number()),
+    alertJobId: v.optional(v.id("_scheduled_functions")), // the next alert's booked run, to cancel on change
+    alertsAsked: v.optional(v.boolean()), // asked once, after their first reply to a job list
+    listSentAt: v.optional(v.number()), // when we last sent them a list of jobs
     pendingJob: v.optional(v.string()), // the job a "want more like this?" answer is about
 
     updatedAt: v.number(),
-  }).index("by_phone", ["phone"]),
+  })
+    .index("by_phone", ["phone"])
+    .index("by_alertHour", ["alertHour"]),
+
+  // Companies by industry and location, one row each, found by Claude (its own knowledge plus web
+  // search) and shared by every user. The list only grows; closed companies are deleted.
+  companies: defineTable({
+    key: v.string(), // "fintech|mumbai": industry and location, lowercase
+    industry: v.string(),
+    city: v.string(),
+    name: v.string(),
+    website: v.union(v.string(), v.null()), // their main site, e.g. "razorpay.com"
+    addedAt: v.number(),
+  }).index("by_key", ["key"]),
+
+  // Per industry and location: when the company list was last refreshed, and a lock so two
+  // background refreshes never run at once.
+  companyPrep: defineTable({ key: v.string(), startedAt: v.number(), refreshedAt: v.optional(v.number()) }).index("by_key", ["key"]),
+
+  // Where a company lists its open jobs, found from its website (see careers.ts). Shared by every
+  // company list it appears in; checked again after a week.
+  companyBoards: defineTable({
+    key: v.string(), // the company's website, or its name if it has none
+    name: v.string(),
+    system: v.union(
+      v.literal("greenhouse"),
+      v.literal("lever"),
+      v.literal("ashby"),
+      v.literal("workable"),
+      v.literal("smartrecruiters"),
+      v.literal("keka"),
+      v.literal("other"), // a hiring system we can't read for free yet (named in otherSystem)
+      v.literal("none"), // no job list found
+    ),
+    slug: v.optional(v.string()), // the company's name on that hiring system
+    otherSystem: v.optional(v.string()), // e.g. "Darwinbox", "Workday"
+    careersUrl: v.optional(v.string()),
+    jobsTotal: v.optional(v.number()),
+    jobsInIndia: v.optional(v.number()),
+    checkedAt: v.number(),
+  }).index("by_key", ["key"]),
 
   // Observability: every output of the agent, scored against the rubric (see evals.ts). One row per
   // resume read (document_read), and per search (preference, jobs_found, job_fit).

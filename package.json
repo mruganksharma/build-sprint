@@ -18,8 +18,13 @@
     "test:greeting": "node scripts/test-greeting.mjs",
     "test:sent": "node scripts/test-sent.mjs",
     "test:hermes-files": "node scripts/test-hermes-files.mjs",
+    "test:alerts": "node scripts/test-alerts.mjs",
+    "test:companies": "node scripts/test-companies.mjs",
     "dashboard": "node scripts/dashboard.mjs",
-    "test:evals": "node scripts/test-evals.mjs"
+    "test:evals": "node scripts/test-evals.mjs",
+    "test:erase": "node scripts/test-erase.mjs",
+    "test:company-jobs": "node scripts/test-company-jobs.mjs",
+    "test:delete-data": "node scripts/test-delete-data.mjs"
   },
   "keywords": [],
   "author": "",

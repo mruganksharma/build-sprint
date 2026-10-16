@@ -122,6 +122,8 @@ export const getByPhone = internalQuery({
       currentLocation: v.union(v.string(), v.null()),
       stage: v.union(stageValidator, v.null()),
       preferences: v.union(preferencesValidator, v.null()),
+      alertHour: v.union(v.number(), v.null()),
+      alertsAsked: v.boolean(),
     }),
     v.null(),
   ),
@@ -144,6 +146,8 @@ export const getByPhone = internalQuery({
       currentLocation: row.currentLocation ?? null,
       stage: row.stage ?? null,
       preferences: row.preferences ?? null,
+      alertHour: row.alertHour ?? null,
+      alertsAsked: !!row.alertsAsked,
     };
   },
 });
@@ -185,7 +189,7 @@ export const getForSearch = internalQuery({
       role: row.preferences?.role ?? row.currentRole ?? null,
       preferences: row.preferences ?? null,
       // Finished the questions after the resume (a follow-up question may be open).
-      ready: ["ready", "job_feedback", "portal_input", "widen_offer"].includes(row.stage ?? ""),
+      ready: ["ready", "job_feedback", "portal_input", "widen_offer", "alerts_choice", "alerts_time"].includes(row.stage ?? ""),
     };
   },
 });
@@ -235,5 +239,28 @@ export const markSearchingForTest = internalMutation({
       .first();
     if (row) await ctx.db.patch(row._id, { searchStartedAt: Date.now() });
     return null;
+  },
+});
+
+// Test helper: turn off daily alerts for made-up test numbers (they start with 1555), and cancel
+// their booked runs, so no alert ever searches for them. Run from the test scripts only.
+export const clearTestAlerts = internalMutation({
+  args: {},
+  returns: v.number(),
+  handler: async (ctx) => {
+    let cleared = 0;
+    for (let hour = 0; hour < 24; hour++) {
+      const rows = await ctx.db
+        .query("profile")
+        .withIndex("by_alertHour", (q) => q.eq("alertHour", hour))
+        .take(100);
+      for (const row of rows) {
+        if (!row.phone?.startsWith("1555")) continue;
+        if (row.alertJobId) await ctx.scheduler.cancel(row.alertJobId);
+        await ctx.db.patch(row._id, { alertHour: undefined, alertJobId: undefined });
+        cleared++;
+      }
+    }
+    return cleared;
   },
 });

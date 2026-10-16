@@ -27,10 +27,10 @@ export const daysQuestion = "How recent should the jobs be?\n1. Last 24 hours\n2
 export const daysText = (days: number) => (days === 1 ? "the last 24 hours" : `the last ${days} days`);
 
 export const allSet = (industries: string[], location: string, days: number) =>
-  `All set. Searching LinkedIn for ${industries.join(", ")} jobs in ${location} from ${daysText(days)} now. This takes a couple of minutes.`;
+  `All set. Searching LinkedIn and company career pages for ${industries.join(", ")} jobs in ${location} from ${daysText(days)} now. This takes a couple of minutes.`;
 
 export const searchingAgain = (industries: string[], location: string) =>
-  `Searching LinkedIn for ${industries.length ? `${industries.join(", ")} ` : ""}jobs in ${location}. This takes a couple of minutes.`;
+  `Searching LinkedIn and company career pages for ${industries.length ? `${industries.join(", ")} ` : ""}jobs in ${location}. This takes a couple of minutes.`;
 
 export const stillSearching = "I'm still searching. Your jobs will arrive here in a minute or two.";
 
@@ -60,3 +60,20 @@ export const welcomeBack = (industries: string[], location: string, days: number
     : "Reply 'jobs' for new jobs, or tell me what to change, like a different city or industry.");
 
 export const welcomeBackMidQuestion = (question: string) => `Welcome back! Let's pick up where we left off.\n\n${question}`;
+
+// Daily job alerts, asked once after their first reply to a job list.
+export const alertsQuestion =
+  "Want me to send you new jobs every day?\n1. Yes, every morning (9 am)\n2. Yes, every evening (6 pm)\n3. Yes, at another time\n4. No thanks";
+export const alertsTimeQuestion = "What time should I send them? For example: 8 am, or 7:30 pm.";
+const hourText = (hour: number) => `${hour % 12 || 12} ${hour < 12 ? "am" : "pm"}`;
+export const alertsOn = (hour: number) =>
+  `Done. Every day around ${hourText(hour)} (India time) I'll search and send you any new jobs. If there's nothing new, I won't message you. Say 'stop alerts' anytime.`;
+export const alertsOff = "No problem. If you change your mind, just say 'daily alerts'.";
+export const alertHeader = (count: number) => `Your daily job alert: ${count} new job${count === 1 ? "" : "s"} for you on LinkedIn, newest first:`;
+
+// "Delete my data": asked once, then done.
+export const deleteConfirm =
+  "This will permanently delete your resume, preferences, messages and job history. Reply DELETE to confirm, or anything else to keep everything.";
+export const deleteDone = "Done. Everything you shared with Job Finder is deleted. Send a resume anytime to start again.";
+export const deleteKept = "Okay, nothing was deleted. Everything is as it was.";
+export const deleteBusy = "I'm in the middle of a job search for you. Try 'delete my data' again in 2 minutes.";

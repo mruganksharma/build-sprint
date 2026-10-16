@@ -6,6 +6,7 @@ import type { FunctionReturnType } from "convex/server";
 import { z } from "zod";
 import { internal } from "./_generated/api";
 import type { ActionCtx } from "./_generated/server";
+import { deleteConfirm } from "./chatText";
 import { rateLimiter } from "./limits";
 
 // A WhatsApp message the app can't handle on its own ("add fintech too", "no", "what happens
@@ -27,6 +28,8 @@ const Understood = z.object({
   rateJob: z.object({ number: z.number(), liked: z.boolean() }).nullable(),
   startOver: z.boolean(),
   search: z.boolean(),
+  alerts: z.object({ on: z.boolean(), hour: z.number().nullable() }).nullable(),
+  deleteData: z.boolean(),
 });
 
 const SYSTEM_PROMPT = `You are the chat side of a WhatsApp job-finding app. The user sends their resume; the app asks which industry, city and how recent the jobs should be; then it searches LinkedIn and sends matching jobs in the chat. It can only search LinkedIn today.
@@ -44,6 +47,8 @@ jobSites: other job sites they want searched, e.g. "Naukri".
 rateJob: if they say they like or don't like a numbered job from the last list.
 startOver: true only if they want to go through the questions again from the start.
 search: true if they asked for jobs, or changed what to search for and haven't said to wait.
+alerts: if they want daily job alerts turned on, moved to another time, or off. on: true or false. hour: the time of day, 0 to 23 in India time (9 am = 9, 7:30 pm = 19), or null if they didn't say a time. The app sends new jobs once a day at that hour, and stays quiet if there's nothing new.
+deleteData: true only if they want all their data deleted or the app to forget them entirely (not just removing one preference). The app then asks them to confirm; leave everything else empty.
 
 reply: what to send back, in plain friendly words, at most 3 short sentences.
 - Say what you understood and changed, e.g. "Added Fintech to B2B SaaS." Don't say you're searching; the app adds that line itself.
@@ -69,9 +74,11 @@ export async function understandMessage(ctx: ActionCtx, phone: string, text: str
     });
     const understood = response.parsed_output;
     if (!understood) return BUSY;
+    if (understood.deleteData) return deleteConfirm; // nothing changes until they confirm
+    const { deleteData: _, ...changes } = understood;
     return await ctx.runMutation(internal.chat.applyUnderstood, {
       phone,
-      ...understood,
+      ...changes,
       reply: understood.reply.replace(/[<>]/g, "").trim() || BUSY,
     });
   } catch (e) {
@@ -91,6 +98,7 @@ function describe(c: Context, text: string): string {
     c.preferences ? `What they've asked for so far: ${JSON.stringify(c.preferences)}` : null,
     c.pendingQuestion ? `The question they're in the middle of answering:\n${c.pendingQuestion}` : null,
     c.searching ? "A job search is running for them right now; results arrive in a minute or two." : null,
+    c.hasResume ? `Daily job alerts: ${c.alertHour === null ? "off" : `on, at ${c.alertHour}:00 India time`}.` : null,
     c.lastJobs.length ? `The last list of jobs sent to them:\n${c.lastJobs.map((j, i) => `${i + 1}. ${j}`).join("\n")}` : null,
     c.chat.length ? `Recent chat, oldest first:\n${c.chat.map((m) => `${m.from}: ${m.text}`).join("\n")}` : null,
     `Their newest message:\n${text}`,

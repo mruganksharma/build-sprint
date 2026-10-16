@@ -19,3 +19,6 @@ node_modules/
 
 # Observability dashboard: built locally from real users' data, never committed
 dashboard/
+
+# Claude Code session lock (local only)
+.claude/scheduled_tasks.lock

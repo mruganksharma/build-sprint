@@ -10,6 +10,7 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import type { ActionCtx } from "./_generated/server";
 import { internalAction } from "./_generated/server";
+import { deleteBusy, deleteConfirm, deleteDone, deleteKept } from "./chatText";
 import { rateLimiter } from "./limits";
 import { understandMessage } from "./understand";
 
@@ -104,6 +105,46 @@ resumeText: if the document is a PDF or photos and it is a resume, the full resu
 const reply = (ctx: ActionCtx, to: string, text: string) =>
   ctx.scheduler.runAfter(0, internal.whatsapp.sendReply, { to, text });
 
+// ---------- "Delete my data" ----------
+
+// Clear ways of asking; anything else is understood by Claude (understand.ts, deleteData).
+const DELETE_REQUEST =
+  /^(please\s+)?((delete|erase|wipe|remove|clear)\s+(all\s+)?(of\s+)?(my|me)\b(\s+(data|details|info|information|account|profile|everything|stuff|resume))?|forget\s+(about\s+)?me|(delete|erase|wipe)\s+(everything|all))[\s!.]*(please)?[\s!.]*$/i;
+const KEEP_REPLY = /^(no|nope|nah|cancel|keep|don'?t|do not|stop|wait|n)\b/i;
+const GOODBYE_CLEANUP_MS = 10 * 60 * 1000; // the "Done" message is removed once delivered
+
+// Handles a delete request or its confirmation. True if the message was dealt with here.
+async function deleteRequest(ctx: ActionCtx, phone: string, body: string): Promise<boolean> {
+  if ((await ctx.runQuery(internal.chat.lastReply, { phone })) === deleteConfirm) {
+    if (body.toUpperCase() === "DELETE") {
+      const result = await ctx.runAction(internal.erase.eraseUser, { phone });
+      if (result.searching) {
+        await reply(ctx, phone, deleteBusy);
+        return true;
+      }
+      await reply(ctx, phone, deleteDone);
+      await ctx.scheduler.runAfter(GOODBYE_CLEANUP_MS, internal.erase.dropGoodbye, { phone, text: deleteDone, tries: 0 });
+      return true;
+    }
+    // Asked again: ask again. Anything else cancels: a plain "no" gets a reply; other messages
+    // carry on as usual.
+    if (DELETE_REQUEST.test(body)) {
+      await reply(ctx, phone, deleteConfirm);
+      return true;
+    }
+    if (KEEP_REPLY.test(body)) {
+      await reply(ctx, phone, deleteKept);
+      return true;
+    }
+    return false;
+  }
+  if (DELETE_REQUEST.test(body)) {
+    await reply(ctx, phone, deleteConfirm);
+    return true;
+  }
+  return false;
+}
+
 // Called for every new incoming WhatsApp message.
 export const handleIncoming = internalAction({
   args: {
@@ -118,6 +159,7 @@ export const handleIncoming = internalAction({
   handler: async (ctx, { phone, type, text, mediaId, fileName, mimeType }) => {
     if (type === "text") {
       const body = (text ?? "").trim();
+      if (await deleteRequest(ctx, phone, body)) return null;
       const link = body.length < MIN_PASTED_CHARS ? findLink(body) : null;
       if (link) return void (await readLink(ctx, phone, link));
       if (body.length < MIN_PASTED_CHARS) {
@@ -126,7 +168,10 @@ export const handleIncoming = internalAction({
         const answer = await ctx.runMutation(internal.chat.handleAnswer, { phone, text: body });
         let text = answer ? answer.reply : REPLY.welcome;
         if (!answer && (await ctx.runQuery(internal.chat.lastReply, { phone })) === REPLY.welcome) text = null;
-        return void (await reply(ctx, phone, text ?? (await understandMessage(ctx, phone, body))));
+        const answered = text ?? (await understandMessage(ctx, phone, body));
+        // Their first reply after a job list: also ask, once, about daily job alerts.
+        const alerts = await ctx.runMutation(internal.chat.maybeAskAlerts, { phone });
+        return void (await reply(ctx, phone, alerts ? `${answered}\n\n${alerts}` : answered));
       }
       if (/[<>]/.test(body)) return void (await reply(ctx, phone, REPLY.angleBrackets));
       return void (await readAndSave(ctx, phone, { text: body }));
@@ -338,6 +383,7 @@ async function readAndSave(ctx: ActionCtx, phone: string, input: { text: string 
     linkedinUrl: check.linkedinUrl ?? undefined,
   });
   await reply(ctx, phone, REPLY.saved(check.summary.replace(/\.$/, ""), firstQuestion));
+
   // Observability: a separate Claude check grades how well the resume was read (after the reply).
   const kind = "text" in input ? "text" : "photos" in input ? "photos" : input.kind;
   await ctx.scheduler.runAfter(0, internal.grade.gradeDocument, {

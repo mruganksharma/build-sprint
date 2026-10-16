@@ -88,7 +88,7 @@ Thirty-minute check, no code — what happened (2026-10-08):
 - Finding jobs: works. A plain request to LinkedIn's public job search (no login, no account) returned 10 real jobs in the Mumbai area.
 - Matching: needed. Only 3 of the 10 were actually "Senior Product Analyst". LinkedIn matches loosely, so the app must filter by title and fit itself.
 - Freshness: in the last 24 hours, only 2 relevant jobs; in the last 7 days, 5. That's why the default window is 7 days.
-- Still a risk: LinkedIn's rules don't allow automated collection, and repeated requests can get blocked. Backup: company career pages that publish their open jobs publicly (to be tested). Paid scraping services are not used in v1 (outside service, and they don't change LinkedIn's rules).
+- Still a risk: LinkedIn's rules don't allow automated collection, and repeated requests can get blocked. Second source (independent of LinkedIn): company career pages. Free public job lists are read directly (Greenhouse, Lever, Ashby, Workable, SmartRecruiters, Keka). Firecrawl, a paid outside service approved by the owner on 12 Oct, is used only to find where a company lists its jobs and to read careers pages that have no free list; never to read LinkedIn or other job boards. Its key lives in Convex environment variables (FIRECRAWL_API_KEY).
 
 ## 7. Milestones
 1. I can skim through relevant openings quickly.

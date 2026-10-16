@@ -46,7 +46,7 @@ export const PRIVACY_HTML = `<!doctype html>
 <p>We keep your data while you use Job Finder. You can ask us to delete it at any time, and we will delete your resume, details, preferences, messages and job history.</p>
 
 <h2>Your choices</h2>
-<p>To see, correct or delete your data, email <a href="mailto:${CONTACT}">${CONTACT}</a> from any address and tell us the WhatsApp number you used. You can stop using Job Finder at any time by not messaging us.</p>
+<p>To delete your data, send "delete my data" in the Job Finder chat and confirm; everything is deleted straight away. To see or correct your data, or delete it another way, email <a href="mailto:${CONTACT}">${CONTACT}</a> from any address and tell us the WhatsApp number you used. You can stop using Job Finder at any time by not messaging us.</p>
 
 <h2>Age</h2>
 <p>Job Finder is for people aged 18 and over.</p>

@@ -10,9 +10,11 @@ import type { Doc } from "./_generated/dataModel";
 import type { ActionCtx } from "./_generated/server";
 import { internalAction } from "./_generated/server";
 import { rateLimiter } from "./limits";
+import { type CompanyJob, smartRecruitersDescription } from "./careers";
+import { alertHeader } from "./chatText";
 
-// Find jobs on LinkedIn's public (no-login) job search, check each against a resume with Claude,
-// and keep the ones that fit.
+// Find jobs on LinkedIn's public (no-login) job search and on company career pages (careers.ts),
+// check each against a resume with Claude, and keep the ones that fit.
 //   Milestone 1 (owner, terminal):  npx convex run jobs:findMatches
 //   Milestone 4a (WhatsApp users):  jobs:searchForUser, results sent in the chat
 
@@ -59,6 +61,10 @@ type Card = {
   location: string;
   postedOn: string; // YYYY-MM-DD
   url: string;
+  // Jobs from company career pages (LinkedIn jobs have none of these):
+  source?: string; // e.g. "PhonePe careers page"
+  description?: string;
+  detailUrl?: string;
 };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -176,6 +182,7 @@ const matchValidator = v.object({
   reason: v.string(),
   caveat: v.union(v.string(), v.null()),
   url: v.string(),
+  source: v.optional(v.string()), // set for company career-page jobs
 });
 type Match = Infer<typeof matchValidator>;
 
@@ -193,7 +200,7 @@ type SearchResult = {
   nearMisses: NearMiss[]; // checked this time, fit the resume's level but broke one of their rules
   skipped: string[]; // industries LinkedIn turned away this time (too many requests)
   records: JobRecord[];
-  counts: { returned: number; tooOld: number; wrongTitle: number; duplicates: number; notAFit: number; brokePreference: number; unchecked: number; alreadySent: number; notChecked: number };
+  counts: { returned: number; fromCompanies: number; tooOld: number; wrongTitle: number; duplicates: number; notAFit: number; brokePreference: number; unchecked: number; alreadySent: number; notChecked: number };
   days: number;
 };
 
@@ -253,12 +260,13 @@ async function runSearch(
     prefs: Preferences | null;
     role: string;
     location: string;
+    city?: string; // the city they asked for, for company career pages ("" or unset: LinkedIn only)
     days: number;
     prior?: Map<string, PriorVerdict>;
     sent?: Set<string>; // job ids already sent to this user, under any preferences
   },
 ): Promise<SearchResult> {
-  const { resume, prefs, role, location, days, prior = new Map(), sent = new Set() } = opts;
+  const { resume, prefs, role, location, city = "", days, prior = new Map(), sent = new Set() } = opts;
 
   // One LinkedIn search per wanted industry (e.g. "Senior Product Manager B2B SaaS"), else just the role.
   const labels = prefs?.industries?.length ? prefs.industries : [role];
@@ -297,7 +305,19 @@ async function runSearch(
       if (pageCards.length < PAGE_SIZE) break;
     }
   }
-  if (skipped.length === queries.length) throw lastError;
+
+  // 1b. Jobs on the career pages of companies in their industries, in their city. If this fails,
+  // the search carries on with LinkedIn alone.
+  let fromCompanies: CompanyJob[] = [];
+  if (city && prefs?.industries?.length) {
+    try {
+      fromCompanies = (await ctx.runAction(internal.careers.jobsFor, { industries: prefs.industries, city, days })).jobs;
+    } catch (e) {
+      console.warn(`[jobs] company career pages skipped: ${String(e)}`);
+    }
+  }
+  if (skipped.length === queries.length && !fromCompanies.length) throw lastError;
+  cards.push(...fromCompanies);
 
   // 2. Drop old postings, wrong titles, and duplicates (same id, or same title + company).
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -339,9 +359,14 @@ async function runSearch(
   const toCheck = fresh.slice(0, MAX_CHECKS);
   for (const card of fresh.slice(MAX_CHECKS)) records.push({ ...card, outcome: "not_checked" });
 
-  // 3. Read each job's full description, one at a time.
+  // 3. Read each job's full description, one at a time. Company jobs mostly come with theirs.
   const descriptions = new Map<string, string>();
   for (const card of toCheck) {
+    if (card.source) {
+      const text = card.description || (card.detailUrl ? await smartRecruitersDescription(card.detailUrl) : "");
+      if (text) descriptions.set(card.jobId, text);
+      continue;
+    }
     try {
       descriptions.set(card.jobId, parseDescription(await fetchText(JOB_URL + card.jobId)));
     } catch (e) {
@@ -388,6 +413,7 @@ async function runSearch(
       reason: verdict.reason,
       caveat: verdict.caveat,
       url: card.url,
+      ...(card.source ? { source: card.source } : {}),
     });
   }
   matches.sort(
@@ -397,6 +423,7 @@ async function runSearch(
   const count = (o: Outcome) => records.filter((r) => r.outcome === o).length;
   const counts = {
     returned: cards.length,
+    fromCompanies: fromCompanies.length,
     tooOld: count("too_old"),
     wrongTitle: count("wrong_title"),
     duplicates: count("duplicate"),
@@ -407,7 +434,9 @@ async function runSearch(
     notChecked: count("not_checked"),
   };
   let summary =
-    `LinkedIn returned ${counts.returned} jobs. Dropped: ${counts.tooOld} older than ${days} days, ` +
+    `LinkedIn returned ${counts.returned - counts.fromCompanies} jobs` +
+    (counts.fromCompanies ? `, company career pages ${counts.fromCompanies}` : "") +
+    `. Dropped: ${counts.tooOld} older than ${days} days, ` +
     `${counts.wrongTitle} wrong job title, ${counts.duplicates} duplicates, ` +
     (hasRules ? `${counts.brokePreference} broke your preferences, ` : "") +
     `${counts.notAFit} not a real fit` +
@@ -461,10 +490,10 @@ const formatDate = (iso: string) =>
   new Date(`${iso}T00:00:00Z`).toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: "UTC" });
 
 function formatJob(job: Match, n: number): string {
-  const jobId = job.url.match(/(\d{6,})(?:\/?$|\?)/)?.[1];
-  const link = jobId ? `https://www.linkedin.com/jobs/view/${jobId}` : job.url;
+  const link = shortLink(job.url);
   return [
     `${n}. ${job.title} – ${job.company}`,
+    job.source ? `From the ${job.source}` : null,
     `${job.location} · posted ${formatDate(job.postedOn)} · ${job.fit === "strong" ? "Strong fit" : "Partial fit"}`,
     `Why: ${job.reason}`,
     job.caveat ? `Note: ${job.caveat}` : null,
@@ -505,9 +534,10 @@ function matchKey(resume: string, role: string, prefs: Preferences | null): stri
 }
 
 export const searchForUser = internalAction({
-  args: { phone: v.string(), announce: v.boolean() },
+  // alert: the daily job alert. Sends only new jobs, and nothing at all if there are none.
+  args: { phone: v.string(), announce: v.boolean(), alert: v.optional(v.boolean()) },
   returns: v.null(),
-  handler: async (ctx, { phone, announce }) => {
+  handler: async (ctx, { phone, announce, alert }) => {
     // Dev-only switch so tests of the questions don't each run a real search. Never set in production.
     if (process.env.JOB_SEARCH === "off") {
       console.log(`[jobs] JOB_SEARCH=off; skipped search for ${phone}`);
@@ -515,11 +545,11 @@ export const searchForUser = internalAction({
     }
     const profile = await ctx.runQuery(internal.profile.getForSearch, { phone });
     if (!profile || !profile.ready) {
-      await send(ctx, phone, "Send me your resume first, and I'll find jobs that fit you.");
+      if (!alert) await send(ctx, phone, "Send me your resume first, and I'll find jobs that fit you.");
       return null;
     }
     if (!(await ctx.runMutation(internal.profile.startSearch, { phone }))) {
-      await send(ctx, phone, "I'm still searching. Your jobs will arrive here in a minute or two.");
+      if (!alert) await send(ctx, phone, "I'm still searching. Your jobs will arrive here in a minute or two.");
       return null;
     }
     const prefs = profile.preferences;
@@ -527,7 +557,7 @@ export const searchForUser = internalAction({
     const industries = prefs?.industries?.length ? `${prefs.industries.join(", ")} ` : "";
     try {
       if (announce) {
-        await send(ctx, phone, `Searching LinkedIn for ${industries}jobs in ${place}. This takes a couple of minutes.`);
+        await send(ctx, phone, `Searching LinkedIn and company career pages for ${industries}jobs in ${place}. This takes a couple of minutes.`);
       }
       const role = profile.role ?? "jobs";
       const key = matchKey(profile.resumeText, role, prefs);
@@ -542,6 +572,7 @@ export const searchForUser = internalAction({
         prefs,
         role,
         location: linkedinLocation(place),
+        city: prefs?.location ?? "",
         days: prefs?.days ?? 7,
         prior: new Map(recent.map(({ jobId, ...verdict }) => [jobId, verdict])),
         sent: new Set(earlier.sent),
@@ -577,7 +608,7 @@ export const searchForUser = internalAction({
         facts: {
           phone,
           searchId,
-          alert: false,
+          alert: !!alert,
           search: result.search,
           role,
           preferences: prefs,
@@ -589,9 +620,12 @@ export const searchForUser = internalAction({
           counts: result.counts,
         },
       });
-      await sendResults(ctx, phone, { ...result, nearMisses, place, industries });
+      if (alert) await sendAlert(ctx, phone, result.matches);
+      else await sendResults(ctx, phone, { ...result, nearMisses, place, industries });
+      if (result.matches.length) await ctx.runMutation(internal.chat.markListSent, { phone });
     } catch (e) {
       console.warn(`[jobs] search failed for ${phone}: ${String(e)}`);
+      if (alert) return null; // a daily alert that fails stays quiet; tomorrow's will try again
       await send(
         ctx,
         phone,
@@ -639,8 +673,8 @@ async function sendResults(
     ].filter(Boolean);
     const nothing =
       counts.returned === 0
-        ? `LinkedIn had no ${industries}jobs for your role in ${place} from ${daysText(days)}.`
-        : `I checked ${counts.returned} jobs on LinkedIn in ${place} from ${daysText(days)}, but found nothing new that fits everything you asked for` +
+        ? `LinkedIn and the company career pages I know had no ${industries}jobs for your role in ${place} from ${daysText(days)}.`
+        : `I checked ${counts.returned} jobs on LinkedIn${counts.fromCompanies ? " and company career pages" : ""} in ${place} from ${daysText(days)}, but found nothing new that fits everything you asked for` +
           (why.length ? ` (${why.join(", ")})` : "") +
           ".";
     // One follow-up question at a time: look further back if we can, else ask about other job sites.
@@ -655,7 +689,7 @@ async function sendResults(
   }
 
   const header =
-    `Found ${matches.length} new job${matches.length === 1 ? "" : "s"} for you on LinkedIn, newest first` +
+    `Found ${matches.length} new job${matches.length === 1 ? "" : "s"} for you on LinkedIn${matches.some((job) => job.source) ? " and company career pages" : ""}, newest first` +
     (matches.length > MAX_SHOWN ? ` (showing the top ${MAX_SHOWN})` : "") +
     (counts.alreadySent ? `. I've left out ${counts.alreadySent} I sent you before` : "") +
     ":";
@@ -666,6 +700,15 @@ async function sendResults(
   const offer = next && (await ctx.runMutation(internal.chat.offerWiderSearch, { phone })) ? widerOffer(matches.length, days, next) : null;
   const extra = [nearMissText(close), offer].filter(Boolean).join("\n\n");
   if (extra) await send(ctx, phone, extra);
+}
+
+// The daily alert: only the new jobs, or no message at all when there are none.
+async function sendAlert(ctx: ActionCtx, phone: string, matches: Match[]) {
+  if (!matches.length) return;
+  const shown = matches.slice(0, MAX_SHOWN);
+  for (const message of chunk([alertHeader(matches.length), ...shown.map((job, i) => formatJob(job, i + 1)), AFTER_RESULTS])) {
+    await send(ctx, phone, message);
+  }
 }
 
 function nearMissText(close: NearMiss[]): string | null {
@@ -680,8 +723,9 @@ function nearMissText(close: NearMiss[]): string | null {
 const widerOffer = (found: number, days: number, next: number) =>
   `${found ? `Only ${found} new job${found === 1 ? "" : "s"}` : "Nothing new"} from ${daysText(days)}. Want me to look at the last ${next} days too? Reply ${next}.`;
 
+// LinkedIn links, shortened to the plain job page. Company career-page links stay as they are.
 const shortLink = (url: string) => {
-  const jobId = url.match(/(\d{6,})(?:\/?$|\?)/)?.[1];
+  const jobId = /linkedin\.com/.test(url) ? url.match(/(\d{6,})(?:\/?$|\?)/)?.[1] : undefined;
   return jobId ? `https://www.linkedin.com/jobs/view/${jobId}` : url;
 };
 
@@ -690,17 +734,24 @@ export const sendResultsForTest = internalAction({
   args: {
     phone: v.string(),
     days: v.number(),
-    matches: v.array(v.object({ title: v.string(), company: v.string(), postedOn: v.string(), url: v.string() })),
+    matches: v.array(v.object({ title: v.string(), company: v.string(), postedOn: v.string(), url: v.string(), source: v.optional(v.string()) })),
     nearMisses: v.array(v.object({ title: v.string(), company: v.string(), postedOn: v.string(), url: v.string(), brokenPreference: v.string() })),
     skipped: v.optional(v.array(v.string())),
+    alert: v.optional(v.boolean()),
   },
   returns: v.null(),
-  handler: async (ctx, { phone, days, matches, nearMisses, skipped }) => {
+  handler: async (ctx, { phone, days, matches, nearMisses, skipped, alert }) => {
+    const full = matches.map((m, i) => ({ ...m, jobId: String(i), location: "Mumbai", fit: "strong" as const, reason: "Test.", caveat: null }));
+    if (matches.length) await ctx.runMutation(internal.chat.markListSent, { phone });
+    if (alert) {
+      await sendAlert(ctx, phone, full);
+      return null;
+    }
     await sendResults(ctx, phone, {
-      matches: matches.map((m, i) => ({ ...m, jobId: String(i), location: "Mumbai", fit: "strong" as const, reason: "Test.", caveat: null })),
+      matches: full,
       nearMisses: nearMisses.map((job, i) => ({ ...job, jobId: `close${i}` })),
       skipped: skipped ?? [],
-      counts: { returned: 20, tooOld: 0, wrongTitle: 5, duplicates: 7, notAFit: 0, brokePreference: nearMisses.length, unchecked: 0, alreadySent: 0, notChecked: 0 },
+      counts: { returned: 20, fromCompanies: 0, tooOld: 0, wrongTitle: 5, duplicates: 7, notAFit: 0, brokePreference: nearMisses.length, unchecked: 0, alreadySent: 0, notChecked: 0 },
       days,
       place: "Mumbai",
       industries: "Fintech ",

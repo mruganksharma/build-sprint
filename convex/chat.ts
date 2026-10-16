@@ -3,8 +3,9 @@ import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { internalMutation, internalQuery } from "./_generated/server";
-import { preferencesValidator } from "./schema";
+import { bookNextAlert } from "./alerts";
 import { recordRating } from "./evals";
+import { preferencesValidator } from "./schema";
 import {
   METROS,
   allSet,
@@ -14,6 +15,10 @@ import {
   metroQuestion,
   noAngleBrackets,
   savedForNext,
+  alertsOff,
+  alertsOn,
+  alertsQuestion,
+  alertsTimeQuestion,
   welcomeBack,
   welcomeBackMidQuestion,
   searchQueuedText,
@@ -143,6 +148,20 @@ async function quickAnswer(ctx: MutationCtx, row: Doc<"profile">, answer: string
       }
       return readyAnswer(ctx, ready, word);
     }
+    case "alerts_choice": {
+      const hour = word === "1" || /morning/.test(word) ? 9 : word === "2" || /evening/.test(word) ? 18 : parseTime(word);
+      if (hour !== null) return setAlerts(ctx, row, hour);
+      if (word === "4" || /^(no|nope|no thanks|not now)$/.test(word)) return setAlerts(ctx, row, null);
+      if (word === "3") {
+        await ctx.db.patch(row._id, { stage: "alerts_time", updatedAt: Date.now() });
+        return alertsTimeQuestion;
+      }
+      return leaveQuestion(ctx, row, word);
+    }
+    case "alerts_time": {
+      const hour = parseTime(word);
+      return hour !== null ? setAlerts(ctx, row, hour) : leaveQuestion(ctx, row, word);
+    }
     case "job_feedback": {
       const job = row.pendingJob ?? "";
       const yes = word === "1" || word.startsWith("yes");
@@ -159,6 +178,61 @@ async function quickAnswer(ctx: MutationCtx, row: Doc<"profile">, answer: string
       return readyAnswer(ctx, row, word);
   }
 }
+
+// A command or job rating instead of an answer: close the question and handle it. Else Claude.
+async function leaveQuestion(ctx: MutationCtx, row: Doc<"profile">, word: string): Promise<string | null> {
+  if (!isCommand(word) && !parseRating(word)) return null;
+  await ctx.db.patch(row._id, { stage: "ready", updatedAt: Date.now() });
+  return readyAnswer(ctx, { ...row, stage: "ready" }, word);
+}
+
+// "8 am", "8pm", "7:30 pm", "20:00", "20" → the hour (0-23). Minutes are dropped: alerts go out
+// on the hour. Null if it isn't clearly a time ("8" alone could be morning or evening).
+function parseTime(word: string): number | null {
+  const m = word.match(/^(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)?$/);
+  if (!m) return null;
+  const hour = Number(m[1]);
+  const half = m[3]?.[0];
+  if (half) return hour >= 1 && hour <= 12 ? (hour % 12) + (half === "p" ? 12 : 0) : null;
+  return (m[2] !== undefined || hour >= 13) && hour <= 23 ? hour : null;
+}
+
+async function setAlerts(ctx: MutationCtx, row: Doc<"profile">, hour: number | null): Promise<string> {
+  await ctx.db.patch(row._id, { alertHour: hour ?? undefined, alertsAsked: true, stage: "ready", updatedAt: Date.now() });
+  await bookNextAlert(ctx, row._id); // cancels any earlier booking; books the new time, if any
+  return hour === null ? alertsOff : alertsOn(hour);
+}
+
+// After their first reply to a job list, ask once about daily alerts. Returns the question, or
+// null if it isn't the moment (already asked, no list yet, another question open, searching).
+export const maybeAskAlerts = internalMutation({
+  args: { phone: v.string() },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, { phone }) => {
+    const row = await ctx.db
+      .query("profile")
+      .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .first();
+    if (!row || row.alertsAsked || row.alertHour !== undefined || !row.listSentAt) return null;
+    if (row.stage !== "ready" || isSearching(row)) return null;
+    await ctx.db.patch(row._id, { stage: "alerts_choice", alertsAsked: true, updatedAt: Date.now() });
+    return alertsQuestion;
+  },
+});
+
+// Called when a job list goes out, so their next reply can be followed by the alerts question.
+export const markListSent = internalMutation({
+  args: { phone: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { phone }) => {
+    const row = await ctx.db
+      .query("profile")
+      .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .first();
+    if (row) await ctx.db.patch(row._id, { listSentAt: Date.now() });
+    return null;
+  },
+});
 
 // After the questions: "change", "jobs", "3 no". Anything else goes to Claude (null).
 async function readyAnswer(ctx: MutationCtx, row: Doc<"profile">, word: string): Promise<string | null> {
@@ -218,6 +292,7 @@ export const understandContext = internalQuery({
     currentLocation: v.union(v.string(), v.null()),
     preferences: v.union(preferencesValidator, v.null()),
     searching: v.boolean(),
+    alertHour: v.union(v.number(), v.null()),
     lastJobs: v.array(v.string()),
     chat: v.array(v.object({ from: v.union(v.literal("user"), v.literal("app")), text: v.string() })),
   }),
@@ -262,6 +337,7 @@ export const understandContext = internalQuery({
       currentLocation: row?.currentLocation ?? null,
       preferences: row?.preferences ?? null,
       searching: !!row && isSearching(row),
+      alertHour: row?.alertHour ?? null,
       lastJobs,
       chat,
     };
@@ -282,6 +358,8 @@ function questionFor(row: Doc<"profile">): string | null {
       const next = widerDays(row.preferences?.days ?? 7);
       return next ? `Want me to look at jobs from the last ${next} days too? Reply ${next}.` : null;
     }
+    case "alerts_choice": return alertsQuestion;
+    case "alerts_time": return alertsTimeQuestion;
     default: return null;
   }
 }
@@ -304,6 +382,7 @@ export const applyUnderstood = internalMutation({
     rateJob: v.union(v.object({ number: v.number(), liked: v.boolean() }), v.null()),
     startOver: v.boolean(),
     search: v.boolean(),
+    alerts: v.union(v.object({ on: v.boolean(), hour: v.union(v.number(), v.null()) }), v.null()),
   },
   returns: v.string(),
   handler: async (ctx, args) => {
@@ -343,6 +422,19 @@ export const applyUnderstood = internalMutation({
       if (step === 0 && !answered[1]) return `${args.reply}\n\n${await askLocation(ctx, updated, {})}`;
       if (step <= 1 && !answered[2]) return `${args.reply}\n\n${await askDays(ctx, updated, prefs.location ?? "")}`;
       return `${args.reply}\n\n${await finish(ctx, updated, prefs.days ?? 7)}`;
+    }
+
+    // Daily alerts turned on, moved, or off. On with no time yet: ask for the time.
+    if (args.alerts) {
+      const hour = args.alerts.hour === null ? null : Math.min(23, Math.max(0, Math.round(args.alerts.hour)));
+      if (args.alerts.on && hour === null) {
+        await ctx.db.patch(row._id, { stage: "alerts_time", alertsAsked: true });
+        return `${args.reply}\n\n${alertsTimeQuestion}`;
+      }
+      const confirmed = await setAlerts(ctx, updated, args.alerts.on ? hour : null);
+      if (!args.search && !changed) return confirmed; // the app's own wording: exact time, India time
+    } else if ((row.stage === "alerts_choice" || row.stage === "alerts_time") && !args.search && !changed && !args.rateJob) {
+      return args.reply; // didn't answer the alerts question: it stays open (Claude asked it again)
     }
 
     // Done with the questions. A question they were asked (job site, "more like this?") is now closed.

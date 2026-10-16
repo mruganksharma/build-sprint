@@ -12,3 +12,4 @@ To test on a real phone once Meta works: steps 2 and 3 (WhatsApp file and photo 
 Parked (not now):
 - scrapping people linkedin post , recommendation on changes on the tweak on the resume if required. Auto apply, message draft for linkedin connections and cold email draft. Search for global recommendation if required. Search on VC forums. Connecting with users gmail and scrapping emails and draft email
 - Tap buttons for the preference questions (Same/Different, city list, 24h/7d/30d), with numbered text as fallback. Needs Meta's WhatsApp connection unlocked (Hermes sends plain text only). Multi-select needs WhatsApp Flows (extra Meta setup).
+- Company careers pages with no hiring-system link (31 of 40 in Fintech Mumbai): read the jobs straight off the page (Firecrawl page text, then Claude picks out titles and cities). Parked 12 Oct.

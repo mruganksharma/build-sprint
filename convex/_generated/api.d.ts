@@ -8,8 +8,15 @@
  * @module
  */
 
+import type * as alerts from "../alerts.js";
+import type * as careers from "../careers.js";
+import type * as careersRead from "../careersRead.js";
 import type * as chat from "../chat.js";
 import type * as chatText from "../chatText.js";
+import type * as companies from "../companies.js";
+import type * as companyLists from "../companyLists.js";
+import type * as crons from "../crons.js";
+import type * as erase from "../erase.js";
 import type * as evalScore from "../evalScore.js";
 import type * as evals from "../evals.js";
 import type * as grade from "../grade.js";
@@ -31,8 +38,15 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  alerts: typeof alerts;
+  careers: typeof careers;
+  careersRead: typeof careersRead;
   chat: typeof chat;
   chatText: typeof chatText;
+  companies: typeof companies;
+  companyLists: typeof companyLists;
+  crons: typeof crons;
+  erase: typeof erase;
   evalScore: typeof evalScore;
   evals: typeof evals;
   grade: typeof grade;

@@ -82,6 +82,23 @@ export const claimHermesOutbox = internalMutation({
   },
 });
 
+// Cancel messages still waiting for the Hermes relay for one number (e.g. stale alerts), so they
+// are never delivered. Marked "failed" so the record stays. Run from the terminal.
+export const dropQueued = internalMutation({
+  args: { phone: v.string() },
+  returns: v.number(),
+  handler: async (ctx, { phone }) => {
+    const rows = await ctx.db
+      .query("messages")
+      .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .order("desc")
+      .take(200);
+    const queued = rows.filter((m) => m.channel === "hermes" && m.status === "queued");
+    for (const m of queued) await ctx.db.patch(m._id, { status: "failed" });
+    return queued.length;
+  },
+});
+
 export const sendReply = internalAction({
   args: { to: v.string(), text: v.string() },
   returns: v.null(),
@@ -151,5 +168,37 @@ export const messagesForPhone = internalQuery({
       fileName: m.fileName ?? null,
       status: m.status ?? null,
     }));
+  },
+});
+
+// Read-only: Meta's current view of our WhatsApp number (is it connected, live, name approved).
+// Sends nothing. Run from the terminal: npx convex run whatsapp:metaStatus
+export const metaStatus = internalAction({
+  args: {},
+  returns: v.any(),
+  handler: async () => {
+    const fields = "verified_name,display_phone_number,status,account_mode,name_status,code_verification_status,quality_rating,platform_type,messaging_limit_tier";
+    const res = await fetch(`${GRAPH_URL}/${process.env.WHATSAPP_PHONE_ID}?fields=${fields}`, {
+      headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}` },
+    });
+    const body = (await res.json()) as Record<string, unknown> & { display_phone_number?: string };
+    if (body.display_phone_number) body.display_phone_number = `…${String(body.display_phone_number).replace(/\D/g, "").slice(-4)}`;
+    return { httpStatus: res.status, ...body };
+  },
+});
+
+// Test: send Meta's ready-made "hello_world" template (allowed any time, unlike free text) to one
+// number, to see whether Meta sending works. Returns Meta's answer. Terminal only.
+export const sendHelloWorldTest = internalAction({
+  args: { to: v.string() },
+  returns: v.any(),
+  handler: async (_ctx, { to }) => {
+    const res = await fetch(`${GRAPH_URL}/${process.env.WHATSAPP_PHONE_ID}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ messaging_product: "whatsapp", to, type: "template", template: { name: "hello_world", language: { code: "en_US" } } }),
+    });
+    const body = JSON.stringify(await res.json()).replaceAll(to, `…${to.slice(-4)}`);
+    return { httpStatus: res.status, meta: JSON.parse(body) };
   },
 });

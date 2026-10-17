@@ -11,7 +11,7 @@ import type { ActionCtx } from "./_generated/server";
 import { internalAction } from "./_generated/server";
 import { rateLimiter } from "./limits";
 import { type CompanyJob, smartRecruitersDescription } from "./careers";
-import { alertHeader } from "./chatText";
+import { alertHeader, alertNothing } from "./chatText";
 
 // Find jobs on LinkedIn's public (no-login) job search and on company career pages (careers.ts),
 // check each against a resume with Claude, and keep the ones that fit.
@@ -23,7 +23,8 @@ const JOB_URL = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/";
 const USER_AGENT =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0 Safari/537.36";
 const PAGE_SIZE = 10; // LinkedIn returns 10 cards per page
-const MAX_PAGES = 3; // keep requests to LinkedIn low
+const MAX_PAGES = 5; // LinkedIn pages per search, across all titles; keep requests to LinkedIn low
+const MAX_SIMILAR = 3; // close titles searched besides the main one, e.g. "Product Lead"
 const PAUSE_MS = 1500; // wait between LinkedIn requests
 const CLAUDE_CONCURRENCY = 5;
 const MAX_SHOWN = 10; // jobs per WhatsApp reply
@@ -133,17 +134,72 @@ function parseDescription(html: string): string {
   return (seniority ? `LinkedIn seniority level: ${seniority}\n\n` : "") + desc;
 }
 
-// Which job titles are worth reading, for the role being searched.
-function titleFilter(role: string): (title: string) => boolean {
-  if (/product/i.test(role)) return (title) => PM_TITLE.test(title) && !WRONG_PM_TITLE.test(title);
+// Which job titles are worth reading, for the role being searched. A title that contains one of
+// the close titles (e.g. "Senior Product Owner" for "Product Owner") is fine too.
+function titleFilter(role: string, similar: string[] = []): (title: string) => boolean {
+  const phrases = similar.map((s) => s.toLowerCase().trim()).filter(Boolean);
+  const isSimilar = (t: string) => phrases.some((p) => t.includes(p));
+  if (/product/i.test(role)) {
+    return (title) => {
+      const t = title.toLowerCase();
+      return !WRONG_PM_TITLE.test(t) && !ENTRY_LEVEL.test(t) && (PM_TITLE.test(t) || isSimilar(t));
+    };
+  }
   const words = role
     .toLowerCase()
     .split(/[^a-z0-9+#]+/)
     .filter((w) => w.length > 1 && !GENERIC_WORDS.has(w));
   return (title) => {
     const t = title.toLowerCase();
-    return !ENTRY_LEVEL.test(t) && (words.length === 0 || words.some((w) => t.includes(w)));
+    return !ENTRY_LEVEL.test(t) && (words.length === 0 || words.some((w) => t.includes(w)) || isSimilar(t));
   };
+}
+
+// The LinkedIn searches to run: the main title (with each wanted industry), then the close titles
+// while pages are left. One page each; spare pages go to the main title's searches.
+type PlannedSearch = { query: string; label: string; main: boolean; pages: number };
+function searchPlan(role: string, similar: string[], industries: string[]): PlannedSearch[] {
+  const withIndustry = (title: string, main: boolean) =>
+    (industries.length ? industries : [null]).map((industry) => ({
+      query: industry ? `${title} ${industry}` : title,
+      label: industry ?? role,
+      main,
+      pages: 1,
+    }));
+  const main = withIndustry(role, true);
+  const others = similar.slice(0, MAX_SIMILAR).flatMap((title) => withIndustry(title, false));
+  const plan = [...main, ...others.slice(0, Math.max(0, MAX_PAGES - main.length))];
+  for (let spare = MAX_PAGES - plan.length, i = 0; spare > 0; spare--, i++) main[i % main.length].pages++;
+  return plan;
+}
+
+const SimilarSchema = z.object({ titles: z.array(z.string()) });
+const SIMILAR_PROMPT = `You help a job-finding app in India search LinkedIn. Given a job title and the person's resume, list up to ${MAX_SIMILAR} other job titles employers in India commonly use for the same job at the same level.
+
+Rules: same kind of work and same seniority as the title given. If the title has a level word (Senior, Lead, Principal, Head), every title you give is at that level or one step up, never a plain or numbered title like "Product Manager II". Never more junior (no associate, junior, intern) and never a different job (e.g. project manager is not product manager). Plain titles of 2 to 4 words, without company or industry names. Leave out the title given. If there are no good ones, return an empty list.`;
+
+// Close titles for the one they search for, e.g. "Product Lead" and "Group Product Manager" for
+// "Senior Product Manager". Empty if Claude can't be asked right now (hourly limit, error).
+async function similarTitles(ctx: ActionCtx, role: string, resume: string): Promise<string[] | null> {
+  const { ok } = await rateLimiter.limit(ctx, "claudeCalls");
+  if (!ok) return null;
+  try {
+    const response = await new Anthropic().messages.parse({
+      model: "claude-opus-5-5",
+      max_tokens: 4000,
+      output_config: { effort: "low", format: zodOutputFormat(SimilarSchema) },
+      system: SIMILAR_PROMPT,
+      messages: [{ role: "user", content: `<title>${role}</title>\n\n<resume>\n${resume}\n</resume>` }],
+    });
+    const out = response.parsed_output;
+    if (!out) return null;
+    const same = role.trim().toLowerCase();
+    const titles = out.titles.map((t) => t.trim()).filter((t) => t && t.length <= 60 && t.toLowerCase() !== same);
+    return [...new Set(titles)].slice(0, MAX_SIMILAR);
+  } catch (e) {
+    console.warn(`[jobs] similar titles for "${role}" failed: ${String(e)}`);
+    return null;
+  }
 }
 
 export function linkedinLocation(place: string): string {
@@ -259,6 +315,7 @@ async function runSearch(
     resume: string;
     prefs: Preferences | null;
     role: string;
+    similar?: string[]; // close titles also searched, e.g. "Product Lead"
     location: string;
     city?: string; // the city they asked for, for company career pages ("" or unset: LinkedIn only)
     days: number;
@@ -266,24 +323,24 @@ async function runSearch(
     sent?: Set<string>; // job ids already sent to this user, under any preferences
   },
 ): Promise<SearchResult> {
-  const { resume, prefs, role, location, city = "", days, prior = new Map(), sent = new Set() } = opts;
+  const { resume, prefs, role, similar = [], location, city = "", days, prior = new Map(), sent = new Set() } = opts;
 
-  // One LinkedIn search per wanted industry (e.g. "Senior Product Manager B2B SaaS"), else just the role.
-  const labels = prefs?.industries?.length ? prefs.industries : [role];
-  const queries = prefs?.industries?.length ? prefs.industries.map((industry) => `${role} ${industry}`) : [role];
-  const pagesPerQuery = Math.max(1, Math.floor(MAX_PAGES / queries.length));
-  const search = `${queries.map((q) => `"${q}"`).join(" + ")} in ${location}, last ${days} days`;
+  // One LinkedIn search per wanted industry (e.g. "Senior Product Manager B2B SaaS"), else just the
+  // role; then the same for the close titles (e.g. "Product Lead B2B SaaS").
+  const plan = searchPlan(role, similar, prefs?.industries ?? []);
+  const search = `${plan.map((p) => `"${p.query}"`).join(" + ")} in ${location}, last ${days} days`;
 
   const { hasRules, block: preferencesBlock } = preferenceRules(prefs);
 
   // 1. Fetch job cards from LinkedIn's public search, a few pages at most.
-  // If LinkedIn turns one industry's search away, keep going with the others and say which was
-  // skipped. Only if every one fails does the whole search fail.
+  // If LinkedIn turns one search away, keep going with the others; an industry is "skipped" only if
+  // every search for it was turned away. Only if every one fails does the whole search fail.
   const cards: Card[] = [];
-  const skipped: string[] = [];
+  const failed = new Set<string>();
+  const worked = new Set<string>();
   let lastError: unknown = null;
-  for (const [i, query] of queries.entries()) {
-    for (let page = 0; page < pagesPerQuery; page++) {
+  for (const { query, label, pages } of plan) {
+    for (let page = 0; page < pages; page++) {
       const params = new URLSearchParams({
         keywords: query,
         location,
@@ -296,9 +353,10 @@ async function runSearch(
       } catch (e) {
         console.warn(`[jobs] skipped "${query}": ${String(e)}`);
         lastError = e;
-        if (page === 0) skipped.push(labels[i]);
+        if (page === 0) failed.add(query);
         break;
       }
+      worked.add(label);
       const pageCards = parseCards(html);
       cards.push(...pageCards);
       await sleep(PAUSE_MS);
@@ -316,12 +374,13 @@ async function runSearch(
       console.warn(`[jobs] company career pages skipped: ${String(e)}`);
     }
   }
-  if (skipped.length === queries.length && !fromCompanies.length) throw lastError;
+  const skipped = [...new Set(plan.map((p) => p.label))].filter((label) => !worked.has(label));
+  if (failed.size === plan.length && !fromCompanies.length) throw lastError;
   cards.push(...fromCompanies);
 
   // 2. Drop old postings, wrong titles, and duplicates (same id, or same title + company).
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const titleOk = titleFilter(role);
+  const titleOk = titleFilter(role, similar);
   const seen = new Set<string>();
   const records: JobRecord[] = [];
   const candidates: Card[] = [];
@@ -560,6 +619,13 @@ export const searchForUser = internalAction({
         await send(ctx, phone, `Searching LinkedIn and company career pages for ${industries}jobs in ${place}. This takes a couple of minutes.`);
       }
       const role = profile.role ?? "jobs";
+      // Close titles: made once per title they search for, then saved. If Claude can't be asked
+      // now, search the main title alone and try again next time.
+      let similar = profile.similarTitles;
+      if (similar === null && profile.role) {
+        similar = await similarTitles(ctx, profile.role, profile.resumeText);
+        if (similar) await ctx.runMutation(internal.profile.saveSimilarTitles, { phone, role: profile.role, titles: similar });
+      }
       const key = matchKey(profile.resumeText, role, prefs);
       const recent = await ctx.runQuery(internal.history.recentVerdicts, {
         phone,
@@ -571,6 +637,7 @@ export const searchForUser = internalAction({
         resume: profile.resumeText,
         prefs,
         role,
+        similar: similar ?? [],
         location: linkedinLocation(place),
         city: prefs?.location ?? "",
         days: prefs?.days ?? 7,
@@ -620,7 +687,7 @@ export const searchForUser = internalAction({
           counts: result.counts,
         },
       });
-      if (alert) await sendAlert(ctx, phone, result.matches);
+      if (alert) await sendAlert(ctx, phone, result.matches, { looked: result.counts.returned, industries, place, days: result.days });
       else await sendResults(ctx, phone, { ...result, nearMisses, place, industries });
       if (result.matches.length) await ctx.runMutation(internal.chat.markListSent, { phone });
     } catch (e) {
@@ -703,8 +770,12 @@ async function sendResults(
 }
 
 // The daily alert: only the new jobs, or no message at all when there are none.
-async function sendAlert(ctx: ActionCtx, phone: string, matches: Match[]) {
-  if (!matches.length) return;
+type AlertContext = { looked: number; industries: string; place: string; days: number };
+async function sendAlert(ctx: ActionCtx, phone: string, matches: Match[], { looked, industries, place, days }: AlertContext) {
+  if (!matches.length) {
+    await send(ctx, phone, alertNothing(looked, industries, place, daysText(days)));
+    return;
+  }
   const shown = matches.slice(0, MAX_SHOWN);
   for (const message of chunk([alertHeader(matches.length), ...shown.map((job, i) => formatJob(job, i + 1)), AFTER_RESULTS])) {
     await send(ctx, phone, message);
@@ -744,7 +815,7 @@ export const sendResultsForTest = internalAction({
     const full = matches.map((m, i) => ({ ...m, jobId: String(i), location: "Mumbai", fit: "strong" as const, reason: "Test.", caveat: null }));
     if (matches.length) await ctx.runMutation(internal.chat.markListSent, { phone });
     if (alert) {
-      await sendAlert(ctx, phone, full);
+      await sendAlert(ctx, phone, full, { looked: 18, industries: "Fintech ", place: "Mumbai", days: 1 });
       return null;
     }
     await sendResults(ctx, phone, {
@@ -840,5 +911,25 @@ export const explainJob = internalAction({
     if (asked) lines.push("Do you want more jobs like this one?\n1. Yes\n2. No");
     await send(ctx, phone, lines.join("\n\n"));
     return null;
+  },
+});
+
+// For tests: the close titles Claude suggests for a made-up title and resume (1 Claude call), the
+// LinkedIn searches that would run, and which job titles would pass the title check.
+export const similarForTest = internalAction({
+  args: { role: v.string(), resume: v.string() },
+  returns: v.union(v.array(v.string()), v.null()),
+  handler: async (ctx, { role, resume }) => await similarTitles(ctx, role, resume),
+});
+
+export const planForTest = internalAction({
+  args: { role: v.string(), similar: v.array(v.string()), industries: v.array(v.string()), titles: v.array(v.string()) },
+  returns: v.object({
+    plan: v.array(v.object({ query: v.string(), label: v.string(), main: v.boolean(), pages: v.number() })),
+    passes: v.array(v.boolean()),
+  }),
+  handler: async (_ctx, { role, similar, industries, titles }) => {
+    const ok = titleFilter(role, similar);
+    return { plan: searchPlan(role, similar, industries), passes: titles.map(ok) };
   },
 });

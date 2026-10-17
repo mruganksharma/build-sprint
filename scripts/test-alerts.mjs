@@ -1,6 +1,6 @@
 // Daily job alerts: asked once after the first reply to a job list; answers by number, words or a
 // time; changed later in any wording; each user's alert is booked for their time (and cancelled
-// when stopped); an alert sends only new jobs and nothing when there are none. Made-up users and made-up job lists (no LinkedIn).
+// when stopped); an alert sends only new jobs, or a short "nothing new today" when there are none. Made-up users and made-up job lists (no LinkedIn).
 // About 6 Claude calls. Runs against DEV with JOB_SEARCH=off for the run. Run: npm run test:alerts
 import { execSync } from "node:child_process";
 import { RESUME, check, finish, newPhone, run, sendText, waitForReplies } from "./test-helpers.mjs";
@@ -90,7 +90,7 @@ try {
   check("when an alert runs, the next day's is booked", bookedAt(d, 8), JSON.stringify(booked(d)));
 
   let sent = await list(d, [], true);
-  check("alert with no new jobs: no message at all", sent.length === 0, sent.join(" || "));
+  check("alert with no new jobs: one short 'nothing new today' message", sent.length === 1 && /^Your daily job alert: nothing new today\. I looked at 18 Fintech jobs in Mumbai from the last 24 hours/.test(sent[0]) && /Reply 'jobs' to search now/.test(sent[0]), sent.join(" || "));
   sent = await list(d, [job(6), job(7)], true);
   check("alert with new jobs: sends them", /^Your daily job alert: 2 new jobs/.test(sent[0] ?? "") && /Product Manager 6/.test(sent.join()), sent[0]);
 } finally {

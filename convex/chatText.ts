@@ -67,9 +67,12 @@ export const alertsQuestion =
 export const alertsTimeQuestion = "What time should I send them? For example: 8 am, or 7:30 pm.";
 const hourText = (hour: number) => `${hour % 12 || 12} ${hour < 12 ? "am" : "pm"}`;
 export const alertsOn = (hour: number) =>
-  `Done. Every day around ${hourText(hour)} (India time) I'll search and send you any new jobs. If there's nothing new, I won't message you. Say 'stop alerts' anytime.`;
+  `Done. Every day around ${hourText(hour)} (India time) I'll search and send you any new jobs. If there's nothing new, I'll send a one-line note to say so. Say 'stop alerts' anytime.`;
 export const alertsOff = "No problem. If you change your mind, just say 'daily alerts'.";
 export const alertHeader = (count: number) => `Your daily job alert: ${count} new job${count === 1 ? "" : "s"} for you on LinkedIn, newest first:`;
+// A daily alert that found nothing new still says so, so a quiet day doesn't look like a fault.
+export const alertNothing = (looked: number, what: string, place: string, period: string) =>
+  `Your daily job alert: nothing new today. ${looked ? `I looked at ${looked} ${what}jobs in ${place} from ${period}, but none fit what you asked for.` : `I found no ${what}jobs in ${place} from ${period}.`} I'll look again tomorrow.\n\nReply 'jobs' to search now, or 'change' to widen your search, e.g. jobs from the last 7 days.`;
 
 // "Delete my data": asked once, then done.
 export const deleteConfirm =

@@ -59,6 +59,9 @@ export default defineSchema({
     preferences: v.optional(preferencesValidator),
     // WhatsApp users: what the resume says today, and where they are in the questions after it.
     currentRole: v.optional(v.string()), // job title to search for, from the resume
+    // Close titles for the same job and level, also searched, e.g. "Product Lead". Made by Claude
+    // once per title: if the title they search for changes, they're made again.
+    similarTitles: v.optional(v.object({ role: v.string(), titles: v.array(v.string()) })),
     currentIndustry: v.optional(v.string()),
     currentLocation: v.optional(v.string()),
     stage: v.optional(stageValidator),

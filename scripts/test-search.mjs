@@ -1,7 +1,7 @@
 // Milestones 4a/4b test with REAL LinkedIn searches: results arrive in the chat, at most 10 jobs are
 // checked by Claude, a second search reuses earlier verdicts, "1 yes" rates a job from the list, and
 // a search with no results asks for another job site. About 10-20 Claude calls.
-// Turns JOB_SEARCH on for the run, then off again. Run: npm run test:search
+// Turns JOB_SEARCH on for the run, then puts it back as it was. Run: npm run test:search
 import { execSync } from "node:child_process";
 import { RESUME, check, finish, newPhone, run, sendText, waitForMatch, waitForReplies } from "./test-helpers.mjs";
 
@@ -28,6 +28,14 @@ async function waitForResults(phone, after) {
   return [];
 }
 
+// Real users on dev need searches on: put the switch back exactly as it was before the run.
+const wasOff = (() => {
+  try {
+    return execSync("npx convex env get JOB_SEARCH", { stdio: ["ignore", "pipe", "ignore"] }).toString().trim() || null;
+  } catch {
+    return null;
+  }
+})();
 execSync("npx convex env remove JOB_SEARCH", { stdio: "ignore" });
 try {
   // ---- first search ----
@@ -46,6 +54,8 @@ try {
   console.log(`\n--- first search, what the user received ---\n${results.join("\n\n--- next message ---\n")}\n---\n`);
   const found = /^Found \d+ new jobs? for you/.test(results[0] ?? "");
   check("results arrive in the chat", results.length > 0, (results[0] ?? "").slice(0, 80));
+  const similar = run("profile:getForSearch", { phone })?.similarTitles;
+  check("close titles were made and saved for their title", Array.isArray(similar) && similar.length > 0, JSON.stringify(similar));
   let counts = run("history:countsForPhone", { phone });
   check("Claude checks at most 10 jobs per search", checkedIn(counts.perSearch[0]) <= 10, JSON.stringify(counts.perSearch[0]));
   if (found) {
@@ -78,13 +88,13 @@ try {
   // ---- a search with no results asks for another job site ----
   const lonely = newPhone();
   await answer(lonely, RESUME, "2", "Underwater basket weaving", "2", "Leh");
-  await sendText(lonely, "1");
+  await sendText(lonely, "3"); // 30 days: nothing further back to offer, so it asks about job sites
   const nothing = await waitForMatch(lonely, /another job site/);
   check("nothing found: says so and asks for another job site", /another job site you'd like me to search/.test(nothing ?? ""), (nothing ?? "").slice(0, 120));
   await sendText(lonely, "Naukri");
   const noted = await waitForMatch(lonely, /^Noted: Naukri/);
   check("the job site is saved", /^Noted: Naukri/.test(noted ?? "") && run("profile:getByPhone", { phone: lonely }).preferences.portals?.includes("Naukri"), noted);
 } finally {
-  execSync("npx convex env set JOB_SEARCH off", { stdio: "ignore" });
+  execSync(wasOff ? `npx convex env set JOB_SEARCH ${wasOff}` : "npx convex env remove JOB_SEARCH", { stdio: "ignore" });
 }
 finish();

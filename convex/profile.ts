@@ -173,6 +173,7 @@ export const getForSearch = internalQuery({
     v.object({
       resumeText: v.string(),
       role: v.union(v.string(), v.null()),
+      similarTitles: v.union(v.array(v.string()), v.null()), // null: not made yet for this role
       preferences: v.union(preferencesValidator, v.null()),
       ready: v.boolean(),
     }),
@@ -184,9 +185,11 @@ export const getForSearch = internalQuery({
       .withIndex("by_phone", (q) => q.eq("phone", phone))
       .first();
     if (!row) return null;
+    const role = row.preferences?.role ?? row.currentRole ?? null;
     return {
       resumeText: row.resumeText,
-      role: row.preferences?.role ?? row.currentRole ?? null,
+      role,
+      similarTitles: role && row.similarTitles?.role === role ? row.similarTitles.titles : null,
       preferences: row.preferences ?? null,
       // Finished the questions after the resume (a follow-up question may be open).
       ready: ["ready", "job_feedback", "portal_input", "widen_offer", "alerts_choice", "alerts_time"].includes(row.stage ?? ""),
@@ -262,5 +265,19 @@ export const clearTestAlerts = internalMutation({
       }
     }
     return cleared;
+  },
+});
+
+// Saves the close titles Claude suggested for the title they search for (see jobs.ts).
+export const saveSimilarTitles = internalMutation({
+  args: { phone: v.string(), role: v.string(), titles: v.array(v.string()) },
+  returns: v.null(),
+  handler: async (ctx, { phone, role, titles }) => {
+    const row = await ctx.db
+      .query("profile")
+      .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .first();
+    if (row) await ctx.db.patch(row._id, { similarTitles: { role, titles } });
+    return null;
   },
 });

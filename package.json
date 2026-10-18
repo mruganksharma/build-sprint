@@ -26,7 +26,8 @@
     "test:company-jobs": "node scripts/test-company-jobs.mjs",
     "test:delete-data": "node scripts/test-delete-data.mjs",
     "test:similar": "node scripts/test-similar-titles.mjs",
-    "test:guests": "node scripts/test-guests.mjs"
+    "test:guests": "node scripts/test-guests.mjs",
+    "test:join-page": "node scripts/test-join-page.mjs"
   },
   "keywords": [],
   "author": "",
@@ -36,6 +37,7 @@
     "@convex-dev/rate-limiter": "^0.4.1",
     "convex": "^1.46.0",
     "mammoth": "^1.13.0",
+    "qrcode-generator": "^2.0.4",
     "word-extractor": "^1.0.4",
     "zod": "^4.6.5"
   },

@@ -2,6 +2,7 @@ import { httpRouter } from "convex/server";
 import { internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
 import { isJoinPhrase } from "./guests";
+import { joinPageHtml } from "./joinPage";
 import { PRIVACY_HTML } from "./privacy";
 
 const http = httpRouter();
@@ -86,6 +87,19 @@ http.route({
   method: "GET",
   handler: httpAction(async () => {
     return new Response(PRIVACY_HTML, { status: 200, headers: { "Content-Type": "text/html; charset=utf-8" } });
+  }),
+});
+
+// The page to share: a QR code and a button that open WhatsApp with the joining phrase typed.
+// The number is the Convex environment variable JOIN_WHATSAPP_NUMBER; without it, a "not open yet" note.
+http.route({
+  path: "/join",
+  method: "GET",
+  handler: httpAction(async () => {
+    return new Response(joinPageHtml(process.env.JOIN_WHATSAPP_NUMBER?.trim()), {
+      status: 200,
+      headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" },
+    });
   }),
 });
 

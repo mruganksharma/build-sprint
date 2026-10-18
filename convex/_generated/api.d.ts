@@ -24,6 +24,7 @@ import type * as guests from "../guests.js";
 import type * as history from "../history.js";
 import type * as http from "../http.js";
 import type * as jobs from "../jobs.js";
+import type * as joinPage from "../joinPage.js";
 import type * as limits from "../limits.js";
 import type * as photos from "../photos.js";
 import type * as privacy from "../privacy.js";
@@ -55,6 +56,7 @@ declare const fullApi: ApiFromModules<{
   history: typeof history;
   http: typeof http;
   jobs: typeof jobs;
+  joinPage: typeof joinPage;
   limits: typeof limits;
   photos: typeof photos;
   privacy: typeof privacy;

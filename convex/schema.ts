@@ -135,6 +135,16 @@ export default defineSchema({
     .index("by_updatedAt", ["updatedAt"]),
 
   // Every WhatsApp message, in and out, one row each. Phone is the user's WhatsApp number.
+  // People who joined the Hermes number with the joining phrase (guests.ts), and people waiting
+  // for a spot when it's full. The owner and testers are on HERMES_ALLOWED_PHONES instead.
+  guests: defineTable({
+    phone: v.string(),
+    status: v.union(v.literal("guest"), v.literal("waiting")),
+    addedAt: v.number(), // joined, or started waiting
+  })
+    .index("by_phone", ["phone"])
+    .index("by_status_and_addedAt", ["status", "addedAt"]),
+
   messages: defineTable({
     phone: v.string(),
     direction: v.union(v.literal("in"), v.literal("out")),

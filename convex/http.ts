@@ -1,6 +1,7 @@
 import { httpRouter } from "convex/server";
 import { internal } from "./_generated/api";
 import { httpAction } from "./_generated/server";
+import { isJoinPhrase } from "./guests";
 import { PRIVACY_HTML } from "./privacy";
 
 const http = httpRouter();
@@ -130,7 +131,9 @@ http.route({
     const type = typeof body.type === "string" ? body.type : "";
     const text = typeof body.text === "string" ? body.text.slice(0, 50000) : undefined;
     if (!phone || !messageId || !type) return new Response("Missing fields", { status: 400 });
-    if (!allowedPhones().has(phone)) return new Response("Not allowed", { status: 403 });
+    if (!allowedPhones().has(phone) && !(await ctx.runQuery(internal.guests.isGuest, { phone }))) {
+      return new Response("Not allowed", { status: 403 });
+    }
 
     const isNew = await ctx.runMutation(internal.whatsapp.saveIncoming, {
       phone,
@@ -168,7 +171,32 @@ http.route({
   handler: httpAction(async (ctx, request) => {
     if (!(await relayAuthorized(request))) return new Response("Forbidden", { status: 403 });
     const messages = await ctx.runMutation(internal.whatsapp.claimHermesOutbox, {});
-    return Response.json({ messages });
+    // The relay sends only to numbers on its own list or on this one.
+    const guests = await ctx.runQuery(internal.guests.guestPhones, {});
+    return Response.json({ messages, guests });
+  }),
+});
+
+// Someone not on the relay's list sent the joining phrase (the relay checks the words first and
+// sends nothing else from strangers). Joined: the relay then forwards the message as usual. Full:
+// the relay sends back the reply.
+http.route({
+  path: "/hermes/join",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!(await relayAuthorized(request))) return new Response("Forbidden", { status: 403 });
+    let body: { phone?: unknown; text?: unknown };
+    try {
+      body = await request.json();
+    } catch {
+      return new Response("Bad JSON", { status: 400 });
+    }
+    const phone = typeof body.phone === "string" ? body.phone.replace(/\D/g, "") : "";
+    const text = typeof body.text === "string" ? body.text.slice(0, 200) : "";
+    if (!/^\d{10,13}$/.test(phone)) return new Response("Missing phone", { status: 400 });
+    if (!isJoinPhrase(text)) return new Response("Not the joining phrase", { status: 403 });
+    if (allowedPhones().has(phone)) return Response.json({ status: "guest", reply: null });
+    return Response.json(await ctx.runMutation(internal.guests.join, { phone }));
   }),
 });
 

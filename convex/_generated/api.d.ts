@@ -20,6 +20,7 @@ import type * as erase from "../erase.js";
 import type * as evalScore from "../evalScore.js";
 import type * as evals from "../evals.js";
 import type * as grade from "../grade.js";
+import type * as guests from "../guests.js";
 import type * as history from "../history.js";
 import type * as http from "../http.js";
 import type * as jobs from "../jobs.js";
@@ -50,6 +51,7 @@ declare const fullApi: ApiFromModules<{
   evalScore: typeof evalScore;
   evals: typeof evals;
   grade: typeof grade;
+  guests: typeof guests;
   history: typeof history;
   http: typeof http;
   jobs: typeof jobs;

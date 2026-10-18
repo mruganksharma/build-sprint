@@ -74,6 +74,12 @@ export const alertHeader = (count: number) => `Your daily job alert: ${count} ne
 export const alertNothing = (looked: number, what: string, place: string, period: string) =>
   `Your daily job alert: nothing new today. ${looked ? `I looked at ${looked} ${what}jobs in ${place} from ${period}, but none fit what you asked for.` : `I found no ${what}jobs in ${place} from ${period}.`} I'll look again tomorrow.\n\nReply 'jobs' to search now, or 'change' to widen your search, e.g. jobs from the last 7 days.`;
 
+// Joining with the phrase when all spots are taken, and later when a spot opens (guests.ts).
+export const joinFull =
+  "Thanks for your interest in Job Finder! It's full right now. I've saved your place in line and will message you here when a spot opens.";
+export const spotOpened =
+  "Good news: a spot opened up on Job Finder. Send me your resume (PDF, Word, a photo or plain text) and I'll start finding jobs that fit you.";
+
 // "Delete my data": asked once, then done.
 export const deleteConfirm =
   "This will permanently delete your resume, preferences, messages and job history. Reply DELETE to confirm, or anything else to keep everything.";

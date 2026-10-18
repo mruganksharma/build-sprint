@@ -1,23 +1,27 @@
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
+import { removeGuest } from "./guests";
 
 // Erase everything stored for one WhatsApp number, so a tester can start again as a new user:
 // profile (resume text, original file and photos, preferences, booked daily alert), messages,
 // searches, jobs looked at, waiting photos and dashboard scores. Run from the terminal only:
 //   npx convex run erase:eraseUser '{"phone": "91XXXXXXXXXX"}'
+// They also leave the guest list (if they joined with the phrase), freeing their spot.
 // Shared, non-personal data (company lists, company job boards) is kept.
 
 const BATCH = 200;
 
 export const eraseUser = internalAction({
-  args: { phone: v.string() },
+  // keepGuest: "delete my data" keeps them on the guest list until the "Done" reply has gone out
+  // (dropGoodbye removes them); otherwise the relay would refuse to send it.
+  args: { phone: v.string(), keepGuest: v.optional(v.boolean()) },
   returns: v.object({ erased: v.boolean(), searching: v.boolean(), note: v.string(), rows: v.record(v.string(), v.number()) }),
-  handler: async (ctx, { phone }) => {
+  handler: async (ctx, { phone, keepGuest }) => {
     const masked = `…${phone.slice(-4)}`;
     const rows: Record<string, number> = {};
     for (;;) {
-      const step = await ctx.runMutation(internal.erase.eraseBatch, { phone });
+      const step = await ctx.runMutation(internal.erase.eraseBatch, { phone, keepGuest });
       if (step.searching) return { erased: false, searching: true, note: `${masked} has a job search running. Try again in 2 minutes.`, rows };
       for (const [table, n] of Object.entries(step.deleted)) rows[table] = (rows[table] ?? 0) + n;
       if (step.done) break;
@@ -29,9 +33,9 @@ export const eraseUser = internalAction({
 
 // Deletes up to BATCH rows per table for this number. done = nothing left.
 export const eraseBatch = internalMutation({
-  args: { phone: v.string() },
+  args: { phone: v.string(), keepGuest: v.optional(v.boolean()) },
   returns: v.object({ searching: v.boolean(), done: v.boolean(), deleted: v.record(v.string(), v.number()) }),
-  handler: async (ctx, { phone }) => {
+  handler: async (ctx, { phone, keepGuest }) => {
     const deleted: Record<string, number> = {};
     let full = false;
 
@@ -83,6 +87,7 @@ export const eraseBatch = internalMutation({
     deleted.evals = evals.length;
     full ||= evals.length === BATCH;
 
+    if (!full && !keepGuest) await removeGuest(ctx, phone);
     return { searching: false, done: !full, deleted };
   },
 });
@@ -137,13 +142,15 @@ export const nextTestPhone = internalQuery({
       pick(await ctx.db.query("searches").withIndex("by_phone", (q) => q.gte("phone", range.from).lt("phone", range.to)).take(take * 10)) ??
       pick(await ctx.db.query("evals").withIndex("by_phone", (q) => q.gte("phone", range.from).lt("phone", range.to)).take(take * 10)) ??
       pick(await ctx.db.query("jobsSeen").withIndex("by_phone_and_jobId", (q) => q.gte("phone", range.from).lt("phone", range.to)).take(take * 50)) ??
-      pick(await ctx.db.query("pendingPhotos").withIndex("by_phone", (q) => q.gte("phone", range.from).lt("phone", range.to)).take(take))
+      pick(await ctx.db.query("pendingPhotos").withIndex("by_phone", (q) => q.gte("phone", range.from).lt("phone", range.to)).take(take)) ??
+      pick(await ctx.db.query("guests").withIndex("by_phone", (q) => q.gte("phone", range.from).lt("phone", range.to)).take(take))
     );
   },
 });
 
 // After "delete my data": the "Done" message is the only record left. Once the relay has collected
-// it (or it was sent another way), delete it too. Checks again later if it's still waiting.
+// it (or it was sent another way), delete it too, and take them off the guest list. Checks again
+// later if it's still waiting.
 export const dropGoodbye = internalMutation({
   args: { phone: v.string(), text: v.string(), tries: v.number() },
   returns: v.null(),
@@ -159,6 +166,7 @@ export const dropGoodbye = internalMutation({
       return null;
     }
     for (const m of goodbye) await ctx.db.delete(m._id);
+    await removeGuest(ctx, phone);
     return null;
   },
 });

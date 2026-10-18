@@ -100,10 +100,11 @@ export const dropQueued = internalMutation({
 });
 
 export const sendReply = internalAction({
-  args: { to: v.string(), text: v.string() },
+  // channel: which way to send, when their messages (which tell us) were just erased.
+  args: { to: v.string(), text: v.string(), channel: v.optional(v.union(v.literal("hermes"), v.literal("meta"))) },
   returns: v.null(),
-  handler: async (ctx, { to, text }) => {
-    if ((await ctx.runQuery(internal.whatsapp.channelFor, { phone: to })) === "hermes") {
+  handler: async (ctx, { to, text, channel }) => {
+    if ((channel ?? (await ctx.runQuery(internal.whatsapp.channelFor, { phone: to }))) === "hermes") {
       await ctx.runMutation(internal.whatsapp.saveOutgoing, { phone: to, text, status: "queued", channel: "hermes" });
       return null;
     }

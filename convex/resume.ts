@@ -117,12 +117,14 @@ const GOODBYE_CLEANUP_MS = 10 * 60 * 1000; // the "Done" message is removed once
 async function deleteRequest(ctx: ActionCtx, phone: string, body: string): Promise<boolean> {
   if ((await ctx.runQuery(internal.chat.lastReply, { phone })) === deleteConfirm) {
     if (body.toUpperCase() === "DELETE") {
-      const result = await ctx.runAction(internal.erase.eraseUser, { phone });
+      // Their messages say which way to reply (Hermes or Meta); note it before they're erased.
+      const channel = await ctx.runQuery(internal.whatsapp.channelFor, { phone });
+      const result = await ctx.runAction(internal.erase.eraseUser, { phone, keepGuest: true });
       if (result.searching) {
         await reply(ctx, phone, deleteBusy);
         return true;
       }
-      await reply(ctx, phone, deleteDone);
+      await ctx.scheduler.runAfter(0, internal.whatsapp.sendReply, { to: phone, text: deleteDone, channel });
       await ctx.scheduler.runAfter(GOODBYE_CLEANUP_MS, internal.erase.dropGoodbye, { phone, text: deleteDone, tries: 0 });
       return true;
     }

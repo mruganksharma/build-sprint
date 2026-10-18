@@ -25,7 +25,8 @@
     "test:erase": "node scripts/test-erase.mjs",
     "test:company-jobs": "node scripts/test-company-jobs.mjs",
     "test:delete-data": "node scripts/test-delete-data.mjs",
-    "test:similar": "node scripts/test-similar-titles.mjs"
+    "test:similar": "node scripts/test-similar-titles.mjs",
+    "test:guests": "node scripts/test-guests.mjs"
   },
   "keywords": [],
   "author": "",
